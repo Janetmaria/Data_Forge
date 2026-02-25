@@ -1,0 +1,43 @@
+## 🚀 How to Run on a New System
+
+### Prerequisites
+Ensure you have the following installed:
+- **Python 3.10+**
+- **Node.js 16+** (with npm)
+
+### Setup Steps
+
+1.  **Clone the Repository**
+    ```bash
+    git clone <your-repo-url>
+    cd <repo-folder>
+    ```
+
+2.  **Run the Setup Script**
+    We have included an automated script that installs dependencies for both the backend (Python) and frontend (React) and launches the application.
+    
+    **Mac/Linux:**
+    ```bash
+    chmod +x start_app.sh
+    ./start_app.sh
+    ```
+    
+    **Windows:**
+    You may need to run the commands manually if you don't have Bash:
+    ```bash
+    # Backend
+    cd backend
+    python -m venv venv
+    venv\Scripts\activate
+    pip install -r requirements.txt
+    uvicorn app.main:app --reload
+
+    # Frontend (New Terminal)
+    cd frontend
+    npm install
+    npm run dev
+    ```
+
+3.  **Access the App**
+    Open your browser and navigate to:
+    `http://localhost:5173`
