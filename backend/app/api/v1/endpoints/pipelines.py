@@ -79,6 +79,12 @@ def execute_preview(dataset: models.Dataset, steps: List[dict], db: Session, lim
         
         # Determine columns
         columns = list(df_transformed.columns)
+        
+        from app.services.dataset_service import infer_column_type
+        column_schemas = [
+            {"name": col, "detected_type": infer_column_type(df_transformed[col])}
+            for col in columns
+        ]
 
         # Take preview (head)
         df_preview = df_transformed.head(limit)
@@ -92,7 +98,8 @@ def execute_preview(dataset: models.Dataset, steps: List[dict], db: Session, lim
             "preview_full_df": df_transformed, # Return full DF for quality checks
             "row_count": len(df_transformed),
             "col_count": len(df_transformed.columns),
-            "columns": columns
+            "columns": columns,
+            "column_schemas": column_schemas
         }
     except Exception as e:
         print(f"Pipeline Execution Error: {e}")

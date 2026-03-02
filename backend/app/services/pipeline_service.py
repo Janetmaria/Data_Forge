@@ -88,13 +88,23 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
         columns = params.get("columns", [])
         n_neighbors = int(params.get("n_neighbors", 5))
         if columns:
-            # KNN only works on numeric data. We filter columns to ensure safety.
-            numeric_cols = [c for c in columns if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
-            if numeric_cols:
+            # KNN needs context (all available numeric columns) to find nearest neighbors
+            # rather than just the target column.
+            all_numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+            
+            # Ensure our target columns are actually numeric
+            target_cols = [c for c in columns if c in all_numeric_cols]
+            
+            if target_cols and all_numeric_cols:
                 imputer = KNNImputer(n_neighbors=n_neighbors)
-                # KNNImputer returns a numpy array, need to assign back carefully
-                imputed_data = imputer.fit_transform(df[numeric_cols])
-                df[numeric_cols] = imputed_data
+                # Fit transform on ALL numeric columns to calculate distances
+                imputed_data = imputer.fit_transform(df[all_numeric_cols])
+                
+                # Extract only the targeted columns back into the main DataFrame
+                # We need to map the target column names to their index in all_numeric_cols
+                for col in target_cols:
+                    col_index = all_numeric_cols.index(col)
+                    df[col] = imputed_data[:, col_index]
 
     elif operation == "drop_duplicates":
         subset = params.get("columns", None) # Optional subset of columns to check
@@ -112,6 +122,29 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
                     df[col] = df[col].str.upper()
                 elif case_type == "title":
                     df[col] = df[col].str.title()
+                    
+    elif operation == "extract_datetime":
+        columns = params.get("columns", [])
+        for col in columns:
+            if col in df.columns:
+                try:
+                    # Convert to datetime if it isn't already
+                    dt_series = pd.to_datetime(df[col], errors='coerce')
+                    df[f"{col}_year"] = dt_series.dt.year
+                    df[f"{col}_month"] = dt_series.dt.month
+                    df[f"{col}_day"] = dt_series.dt.day
+                except Exception:
+                    pass
+
+    elif operation == "time_series_fill":
+        columns = params.get("columns", [])
+        method = params.get("method", "ffill") # ffill (forward) or bfill (backward)
+        for col in columns:
+            if col in df.columns:
+                if method == "ffill":
+                    df[col] = df[col].ffill()
+                elif method == "bfill":
+                    df[col] = df[col].bfill()
 
     elif operation == "convert_type":
         columns = params.get("columns", [])
@@ -237,16 +270,55 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
             if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
                 df[col] = df[col].round(decimals)
 
-    elif operation == "regex_filter":
-        column = params.get("column")
-        pattern = params.get("pattern")
-        keep_matches = params.get("keep_matches", True)
-        if column and pattern and column in df.columns:
-            matches = df[column].astype(str).str.contains(pattern, regex=True, na=False)
-            if keep_matches:
-                df = df[matches]
-            else:
-                df = df[~matches]
+    elif operation == "validate_format":
+        columns = params.get("columns", [])
+        format_type = params.get("format_type", "email")
+        action = params.get("action", "drop_invalid") # 'drop_invalid' or 'set_null'
+        
+        # Super-permissive but industry-standard regex definitions
+        patterns = {
+            "email": r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)",
+            "phone": r"(^\+?[\d\s\-\(\)]{7,20}$)",
+            "url": r"^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$",
+            "ip_address": r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$",
+            "credit_card": r"^(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|6(?:011|5[0-9][0-9])[0-9]{12}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})$",
+            "aadhaar": r"^[2-9]{1}[0-9]{3}\s[0-9]{4}\s[0-9]{4}$",
+            "custom": params.get("pattern", r".*")
+        }
+        
+        pattern = patterns.get(format_type, patterns["custom"])
+        
+        for col in columns:
+            if col in df.columns:
+                # Evaluate matches. Treating True as valid.
+                is_valid = df[col].astype(str).str.match(pattern, na=False)
+                
+                if action == "drop_invalid":
+                    # Drops rows that are explicitly invalid (it also drops NaNs by default since na=False)
+                    df = df[is_valid]
+                elif action == "set_null":
+                    # Keep the row but blast the invalid cell
+                    df.loc[~is_valid, col] = np.nan
+
+    elif operation == "remove_outliers_iqr":
+        columns = params.get("columns", [])
+        multiplier = float(params.get("multiplier", 1.5))
+        for col in columns:
+            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+                Q1 = df[col].quantile(0.25)
+                Q3 = df[col].quantile(0.75)
+                IQR = Q3 - Q1
+                lower_bound = Q1 - (multiplier * IQR)
+                upper_bound = Q3 + (multiplier * IQR)
+                # Keep only rows within bounds or rows that are NaN (don't drop NaNs here)
+                df = df[(df[col].isna()) | ((df[col] >= lower_bound) & (df[col] <= upper_bound))]
+
+    elif operation == "standard_scale":
+        columns = params.get("columns", [])
+        from sklearn.preprocessing import StandardScaler
+        for col in columns:
+            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+                df[[col]] = StandardScaler().fit_transform(df[[col]])
 
     elif operation == "normalize":
         # Min-Max Scaling

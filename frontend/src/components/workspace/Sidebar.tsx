@@ -4,13 +4,23 @@ import { ChevronDown, ChevronRight, Type, Wand2, Database, GitMerge } from 'luci
 import { cn } from '@/lib/utils';
 import { MergeDialog } from './MergeDialog';
 import { ScaleDialog } from './ScaleDialog';
+import { FormatValidationDialog } from './FormatValidationDialog';
+import { CustomFillDialog } from './CustomFillDialog';
+import { ColumnStatsPanel } from './ColumnStatsPanel';
+
+interface DatasetColumn {
+  id: string;
+  name: string;
+  detected_type: string;
+}
 
 interface SidebarProps {
   selectedColumn: string | null;
   columnType: string | null;
-  onAddStep: (operation: string, params: any) => void;
+  onAddStep: (operation: string, params: any) => Promise<void>;
   currentDatasetId: string;
-  currentDatasetColumns: any[];
+  currentDatasetColumns?: DatasetColumn[];
+  previewData?: any[];
 }
 
 interface OperationGroup {
@@ -29,10 +39,12 @@ interface Operation {
   isCustomAction?: boolean; // If true, opens a dialog instead of direct action
 }
 
-export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetId, currentDatasetColumns }: SidebarProps) {
+export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetId, currentDatasetColumns, previewData }: SidebarProps) {
   const [openGroups, setOpenGroups] = useState<string[]>(['cleaning', 'standardization', 'advanced', 'data integration']);
   const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
   const [scaleDialogOpen, setScaleDialogOpen] = useState(false);
+  const [formatDialogOpen, setFormatDialogOpen] = useState(false);
+  const [customFillDialogOpen, setCustomFillDialogOpen] = useState(false);
 
   const toggleGroup = (id: string) => {
     setOpenGroups(prev =>
@@ -53,10 +65,12 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
       icon: Database,
       operations: [
         { id: 'drop_duplicates', label: 'Remove Duplicates', validTypes: ['All'] },
-        { id: 'drop_columns', label: 'Drop Column', requiresColumn: true, validTypes: ['All'] },
-        { id: 'drop_missing', label: 'Drop Missing Rows', validTypes: ['All'] },
+        { id: 'validate_format', label: 'Format Validation (Email, Links, IP...)', requiresColumn: true, validTypes: ['Text', 'Categorical'], isCustomAction: true },
+        { id: 'drop_missing', label: 'Drop Missing Rows (Any Column)', validTypes: ['All'] },
+        { id: 'drop_missing_specific', label: 'Drop Missing Rows (This Column)', requiresColumn: true, validTypes: ['All'] },
         { id: 'fill_missing', label: 'Fill Missing (Mean)', requiresColumn: true, validTypes: ['Numeric'], params: { method: 'mean' } },
         { id: 'fill_missing_mode', label: 'Fill Missing (Mode)', requiresColumn: true, validTypes: ['All'], params: { method: 'mode' } },
+        { id: 'fill_missing_custom', label: 'Fill Missing (Custom Value)', requiresColumn: true, validTypes: ['All'], isCustomAction: true },
       ]
     },
     {
@@ -70,14 +84,19 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
         { id: 'convert_type_string', label: 'Convert to String', requiresColumn: true, validTypes: ['All'], params: { type: 'string' } },
         { id: 'convert_type_text_to_numeric', label: 'Mixed → Numbers (20, thirty → 20, 30)', requiresColumn: true, validTypes: ['All'], params: { type: 'text_to_numeric' } },
         { id: 'convert_type_numeric_to_text', label: 'Mixed → Words (20, thirty → twenty, thirty)', requiresColumn: true, validTypes: ['All'], params: { type: 'numeric_to_text' } },
+        { id: 'extract_datetime', label: 'Extract Date Info (Y/M/D)', requiresColumn: true, validTypes: ['Date'] }
       ]
     },
     {
       title: 'Advanced',
       icon: Wand2,
       operations: [
-        { id: 'knn_impute', label: 'KNN Imputation', validTypes: ['Numeric'], params: { n_neighbors: 5 } },
+        { id: 'knn_impute', label: 'KNN Imputation', requiresColumn: true, validTypes: ['Numeric'], params: { n_neighbors: 5 } },
         { id: 'normalize', label: 'Min-Max Scaling', requiresColumn: true, validTypes: ['Numeric'], isCustomAction: true },
+        { id: 'standard_scale', label: 'Standard Scaling (Z-Score)', requiresColumn: true, validTypes: ['Numeric'] },
+        { id: 'remove_outliers_iqr', label: 'Remove Outliers (IQR)', requiresColumn: true, validTypes: ['Numeric'], params: { multiplier: 1.5 } },
+        { id: 'time_series_fill_ffill', label: 'Time-Series: Forward Fill', requiresColumn: true, validTypes: ['All'], params: { method: 'ffill' } },
+        { id: 'time_series_fill_bfill', label: 'Time-Series: Backward Fill', requiresColumn: true, validTypes: ['All'], params: { method: 'bfill' } },
       ]
     }
   ];
@@ -89,6 +108,12 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
       } else if (op.id === 'normalize') {
         if (!selectedColumn) return;
         setScaleDialogOpen(true);
+      } else if (op.id === 'validate_format') {
+        if (!selectedColumn) return;
+        setFormatDialogOpen(true);
+      } else if (op.id === 'fill_missing_custom') {
+        if (!selectedColumn) return;
+        setCustomFillDialogOpen(true);
       }
       return;
     }
@@ -99,7 +124,9 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
     // Normalize operation names mapping to backend
     if (op.id.startsWith('text_case')) opName = 'text_case';
     if (op.id.startsWith('convert_type')) opName = 'convert_type';
-    if (op.id === 'fill_missing_mode') opName = 'fill_missing';
+    if (op.id.startsWith('fill_missing')) opName = 'fill_missing';
+    if (op.id === 'drop_missing_specific') opName = 'drop_missing';
+    if (op.id.startsWith('time_series_fill')) opName = 'time_series_fill';
 
     if (op.requiresColumn) {
       if (!selectedColumn) return; // Should be disabled anyway
@@ -111,13 +138,6 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
       // If a column is selected, maybe we want to drop dupes based on that column?
       // For now, let's keep drop_duplicates global unless we implement a specific UI for it.
       // But the requirement says "Remove Duplicates" in "Data Cleaning".
-    }
-
-    if (op.id === 'knn_impute') {
-      // KNN usually applies to all numeric columns or specific ones. 
-      // For simplicity, let's apply to all numeric columns if no specific selection logic (backend handles filtering)
-      // Or if a column is selected and it's numeric, we could restrict it, but KNN is multivariate.
-      // Let's send empty columns to imply "all valid".
     }
 
     onAddStep(opName, params);
@@ -166,6 +186,16 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-4">
+
+        {/* Column Statistics Panel */}
+        {selectedColumn && previewData && previewData.length > 0 && (
+          <ColumnStatsPanel
+            column={selectedColumn}
+            columnType={columnType}
+            data={previewData}
+          />
+        )}
+
         {operations.map((group, idx) => (
           <div key={idx} className="space-y-1">
             <button
@@ -210,8 +240,15 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
         open={mergeDialogOpen}
         onOpenChange={setMergeDialogOpen}
         currentDatasetId={currentDatasetId}
-        currentDatasetColumns={currentDatasetColumns}
-        onMerge={(params) => onAddStep('merge', params)}
+        currentDatasetColumns={currentDatasetColumns || []}
+        onMerge={(params) => {
+          if (params.how === 'concat') {
+            const { how, ...restParams } = params;
+            onAddStep('concat', restParams);
+          } else {
+            onAddStep('merge', params);
+          }
+        }}
       />
 
       <ScaleDialog
@@ -220,6 +257,28 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
         onApply={(params) => {
           if (selectedColumn) {
             onAddStep('normalize', { ...params, columns: [selectedColumn] });
+          }
+        }}
+      />
+
+      <FormatValidationDialog
+        open={formatDialogOpen}
+        onOpenChange={setFormatDialogOpen}
+        selectedColumn={selectedColumn}
+        onApply={(params) => {
+          if (selectedColumn) {
+            onAddStep('validate_format', { ...params, columns: [selectedColumn] });
+          }
+        }}
+      />
+
+      <CustomFillDialog
+        open={customFillDialogOpen}
+        onOpenChange={setCustomFillDialogOpen}
+        selectedColumn={selectedColumn}
+        onApply={(params) => {
+          if (selectedColumn) {
+            onAddStep('fill_missing', { ...params, columns: [selectedColumn] });
           }
         }}
       />

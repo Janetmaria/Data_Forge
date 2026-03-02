@@ -42,6 +42,7 @@ export default function DatasetDetailsPage() {
   const [pipelineId, setPipelineId] = useState<string | null>(null);
   const [pipelineName] = useState<string>('Draft Pipeline');
   const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const [selectedColumn, setSelectedColumn] = useState<string | null>(null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
@@ -66,36 +67,39 @@ export default function DatasetDetailsPage() {
       setPreviewData(pipeRes.data.preview);
       setPreviewColumns(pipeRes.data.columns || []);
       setPipelineId(pipeRes.data.pipeline_id);
-      
+
       // 3. Update dataset with pipeline alerts (this has the current transformed data alerts)
       setDataset({
         ...datasetData,
         quality_alerts: pipeRes.data.quality_alerts || datasetData.quality_alerts
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to init workspace", err);
+      const detailedError = err.response?.data?.detail || err.message || String(err);
+      setErrorMsg(`Failed to load workspace: ${detailedError}`);
     } finally {
       setLoading(false);
     }
   };
 
   const updateState = (res: any) => {
-      console.log("UpdateState called with:", res.data);
-      console.log("Preview data sample:", res.data.preview?.slice(0, 3));
-      console.log("Steps:", res.data.steps);
-      
-      setSteps(res.data.steps);
-      // Create a new array reference to ensure React re-render
-      setPreviewData([...(res.data.preview || [])]);
-      setPreviewColumns(res.data.columns || []);
-      
-      // Update quality alerts dynamically - ensure new object reference for React re-render
-      if (dataset && res.data.quality_alerts) {
-          setDataset({
-              ...dataset,
-              quality_alerts: [...res.data.quality_alerts]
-          });
-      }
+    console.log("UpdateState called with:", res.data);
+    console.log("Preview data sample:", res.data.preview?.slice(0, 3));
+    console.log("Steps:", res.data.steps);
+
+    setSteps(res.data.steps);
+    // Create a new array reference to ensure React re-render
+    setPreviewData([...(res.data.preview || [])]);
+    setPreviewColumns(res.data.columns || []);
+
+    // Update quality alerts dynamically - ensure new object reference for React re-render
+    if (dataset) {
+      setDataset({
+        ...dataset,
+        quality_alerts: res.data.quality_alerts ? [...res.data.quality_alerts] : dataset.quality_alerts,
+        columns: res.data.column_schemas ? [...res.data.column_schemas] : dataset.columns
+      });
+    }
   };
 
   const handleAddStep = async (operation: string, params: any) => {
@@ -154,12 +158,12 @@ export default function DatasetDetailsPage() {
     try {
       setProcessing(true);
       const res = await api.post(`/pipelines/interactive/${id}/command`, { text: cmd });
-      
+
       updateState(res);
-      
+
       // Optionally show a toast or message about the action taken
       if (res.data.added_step) {
-          console.log("Executed command:", res.data.added_step);
+        console.log("Executed command:", res.data.added_step);
       }
     } catch (err) {
       console.error("Command failed", err);
@@ -194,16 +198,35 @@ export default function DatasetDetailsPage() {
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div className="flex h-screen items-center justify-center bg-[#121212]">
         <div className="flex flex-col items-center gap-4">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent"></div>
-          <p className="text-muted-foreground">Loading workspace...</p>
+          <p className="text-gray-400">Loading workspace...</p>
         </div>
       </div>
     );
   }
 
-  if (!dataset) return <div className="p-8">Dataset not found</div>;
+  if (errorMsg) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#121212]">
+        <div className="flex flex-col items-center justify-center p-8 text-red-400 bg-[#1e1e1e] border border-red-900/50 rounded-xl shadow-lg max-w-lg text-center">
+          <AlertTriangle className="h-12 w-12 mb-4 text-red-500" />
+          <h2 className="text-xl font-bold mb-2 text-red-400">Error Loading Dataset</h2>
+          <p className="font-mono text-sm bg-[#121212] p-4 rounded text-red-300 w-full overflow-auto break-all text-left">{errorMsg}</p>
+          <Button variant="outline" className="mt-6 border-red-500 text-red-400 hover:bg-red-500/10" onClick={() => window.location.href = "/"}>Return to Dashboard</Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!dataset) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#121212]">
+        <div className="flex h-full items-center justify-center p-8 text-red-400">Dataset not found</div>
+      </div>
+    );
+  }
 
   return (
     <WorkspaceLayout
@@ -246,16 +269,18 @@ export default function DatasetDetailsPage() {
         </div>
       }
       sidebar={
-        <Sidebar 
-          selectedColumn={selectedColumn} 
+        <Sidebar
+          selectedColumn={selectedColumn}
           columnType={selectedColumnType}
           onAddStep={handleAddStep}
           currentDatasetId={id!}
+          currentDatasetColumns={dataset.columns}
+          previewData={previewData}
         />
       }
       preview={
-        <PreviewPanel 
-          data={previewData} 
+        <PreviewPanel
+          data={previewData}
           columns={previewColumns.length > 0 ? previewColumns : dataset.columns.map(c => c.name)}
           selectedColumn={selectedColumn}
           onSelectColumn={setSelectedColumn}
@@ -264,30 +289,30 @@ export default function DatasetDetailsPage() {
       }
       log={
         <>
-        <LogPanel 
-          steps={steps} 
-          onRemoveStep={handleRemoveStep}
-          onReset={handleReset}
-          onCommand={handleCommand}
-        />
-        <SavePipelineDialog
+          <LogPanel
+            steps={steps}
+            onRemoveStep={handleRemoveStep}
+            onReset={handleReset}
+            onCommand={handleCommand}
+          />
+          <SavePipelineDialog
             open={saveDialogOpen}
             onOpenChange={setSaveDialogOpen}
             pipelineId={pipelineId}
             currentName={pipelineName}
             onSaved={() => {
-                alert("Pipeline saved successfully!");
+              alert("Pipeline saved successfully!");
             }}
-        />
-        <ApplyTemplateDialog 
+          />
+          <ApplyTemplateDialog
             open={applyTemplateDialogOpen}
             onOpenChange={setApplyTemplateDialogOpen}
             datasetId={id!}
             onApplied={() => {
-                initializeWorkspace();
-                setApplyTemplateDialogOpen(false);
+              initializeWorkspace();
+              setApplyTemplateDialogOpen(false);
             }}
-        />
+          />
         </>
       }
     />

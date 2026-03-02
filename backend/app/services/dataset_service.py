@@ -32,9 +32,21 @@ def infer_column_type(series: pd.Series) -> str:
         return "Date"
     elif pd.api.types.is_bool_dtype(series):
         return "Boolean"
-    elif series.nunique() < 20 and pd.api.types.is_string_dtype(series):
-        return "Categorical"
     else:
+        # If it's a string object, pandas might not have automatically caught dates
+        if pd.api.types.is_string_dtype(series) or series.dtype == 'object':
+            sample = series.dropna().head(50)
+            if not sample.empty:
+                # Convert to datetime with coerce (invalid strings become NaT)
+                converted = pd.to_datetime(sample, errors='coerce')
+                # If more than 50% of the sample successfully converted to a Date
+                valid_date_count = converted.notna().sum()
+                if valid_date_count >= len(sample) * 0.5 and valid_date_count > 0:
+                    return "Date"
+                    
+            if series.nunique() < 20:
+                return "Categorical"
+                
         return "Text"
 
 def profile_dataset(df: pd.DataFrame) -> List[schemas.DatasetColumnCreate]:

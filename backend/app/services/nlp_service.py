@@ -90,4 +90,40 @@ def parse_command(command: str) -> Dict[str, Any]:
             
         return {"operation": "normalize", "params": params}
 
+    # Custom Fills ("fill age with 0")
+    custom_fill_match = re.search(r"fill (.+?) with (.+)$", cmd)
+    if custom_fill_match:
+        col = custom_fill_match.group(1).strip()
+        val = custom_fill_match.group(2).strip()
+        return {"operation": "fill_missing", "params": {"columns": [col], "method": "constant", "value": val}}
+
+    # Outliers
+    if re.search(r"(remove|drop) outliers (from|in) ", cmd):
+        col = re.sub(r"^(remove|drop) outliers (from|in) ", "", cmd).strip()
+        return {"operation": "remove_outliers_iqr", "params": {"columns": [col], "multiplier": 1.5}}
+
+    # Standard Scaler
+    if cmd.startswith("standard scale ") or cmd.startswith("zscore "):
+        col = cmd.replace("standard scale ", "").replace("zscore ", "").strip()
+        return {"operation": "standard_scale", "params": {"columns": [col]}}
+
+    # Date Extraction
+    if cmd.startswith("extract date ") or cmd.startswith("parse date "):
+        col = cmd.replace("extract date ", "").replace("parse date ", "").strip()
+        return {"operation": "extract_datetime", "params": {"columns": [col]}}
+
+    # Format Checking (Email/Phone/IP/URL/Credit Card/Aadhaar)
+    format_match = re.search(r"validate (email|phone|ip|url|credit card|aadhaar) (format )?(in |for )?(.+)$", cmd, re.IGNORECASE)
+    if format_match:
+        fmt_str = format_match.group(1).lower()
+        if fmt_str == "ip": 
+            fmt_type = "ip_address"
+        elif fmt_str == "credit card":
+            fmt_type = "credit_card"
+        else:
+            fmt_type = fmt_str # email, phone, url, aadhaar directly map
+            
+        col = format_match.group(4).strip()
+        return {"operation": "validate_format", "params": {"columns": [col], "format_type": fmt_type, "action": "set_null"}}
+
     return None

@@ -67,7 +67,10 @@ export function MergeDialog({ open, onOpenChange, currentDatasetId, currentDatas
   };
 
   const handleMerge = () => {
-    if (!selectedDatasetId) return;
+    if (!selectedDatasetId) {
+      alert("Please select a dataset to merge.");
+      return;
+    }
 
     const params: any = {
       secondary_dataset_id: selectedDatasetId,
@@ -75,11 +78,12 @@ export function MergeDialog({ open, onOpenChange, currentDatasetId, currentDatas
     };
 
     if (mergeType !== 'concat') {
-      if (leftKey) params.left_on = leftKey;
-      if (rightKey) params.right_on = rightKey;
-      // If only one key provided, assume same name? Or force both?
-      // Let's force both for clarity in this dialog, or if user leaves empty we assume index merge?
-      // For now, let's just pass what we have.
+      if (!leftKey || !rightKey) {
+        alert("Please select both a Left Column and a Right Column for the merge.");
+        return;
+      }
+      params.left_on = leftKey;
+      params.right_on = rightKey;
     } else {
       params.axis = 0; // Default vertical concat
     }
