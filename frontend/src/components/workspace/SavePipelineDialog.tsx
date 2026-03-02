@@ -31,7 +31,7 @@ export function SavePipelineDialog({ open, onOpenChange, pipelineId, currentName
       // Let's implement a simple update endpoint on backend or use a specific action.
       // Since I didn't create a specific update endpoint yet, I will create one now.
       
-      await api.put(`/pipelines/${pipelineId}`, {
+      await api.post(`/pipelines/${pipelineId}/clone`, {
         name,
         description
       });

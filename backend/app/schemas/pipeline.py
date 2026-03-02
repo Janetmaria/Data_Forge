@@ -36,7 +36,7 @@ class PipelineStep(BaseModel):
 class PipelineBase(BaseModel):
     name: str
     description: Optional[str] = None
-    dataset_id: str
+    dataset_id: Optional[str] = None
 
 class PipelineCreate(PipelineBase):
     steps: List[PipelineStep]

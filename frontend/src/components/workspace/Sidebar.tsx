@@ -3,12 +3,14 @@ import { Button } from '@/components/ui/button';
 import { ChevronDown, ChevronRight, Type, Wand2, Database, GitMerge } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MergeDialog } from './MergeDialog';
+import { ScaleDialog } from './ScaleDialog';
 
 interface SidebarProps {
   selectedColumn: string | null;
   columnType: string | null;
   onAddStep: (operation: string, params: any) => void;
   currentDatasetId: string;
+  currentDatasetColumns: any[];
 }
 
 interface OperationGroup {
@@ -27,12 +29,13 @@ interface Operation {
   isCustomAction?: boolean; // If true, opens a dialog instead of direct action
 }
 
-export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetId }: SidebarProps) {
+export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetId, currentDatasetColumns }: SidebarProps) {
   const [openGroups, setOpenGroups] = useState<string[]>(['cleaning', 'standardization', 'advanced', 'data integration']);
   const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
+  const [scaleDialogOpen, setScaleDialogOpen] = useState(false);
 
   const toggleGroup = (id: string) => {
-    setOpenGroups(prev => 
+    setOpenGroups(prev =>
       prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]
     );
   };
@@ -74,17 +77,20 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
       icon: Wand2,
       operations: [
         { id: 'knn_impute', label: 'KNN Imputation', validTypes: ['Numeric'], params: { n_neighbors: 5 } },
-        { id: 'normalize', label: 'Min-Max Scaling', requiresColumn: true, validTypes: ['Numeric'] },
+        { id: 'normalize', label: 'Min-Max Scaling', requiresColumn: true, validTypes: ['Numeric'], isCustomAction: true },
       ]
     }
   ];
 
   const handleOperationClick = (op: Operation) => {
     if (op.isCustomAction) {
-        if (op.id === 'merge_datasets') {
-            setMergeDialogOpen(true);
-        }
-        return;
+      if (op.id === 'merge_datasets') {
+        setMergeDialogOpen(true);
+      } else if (op.id === 'normalize') {
+        if (!selectedColumn) return;
+        setScaleDialogOpen(true);
+      }
+      return;
     }
 
     let params = op.params || {};
@@ -102,16 +108,16 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
 
     // Special handling for global operations that might take columns optionally
     if (op.id === 'drop_duplicates' && selectedColumn) {
-        // If a column is selected, maybe we want to drop dupes based on that column?
-        // For now, let's keep drop_duplicates global unless we implement a specific UI for it.
-        // But the requirement says "Remove Duplicates" in "Data Cleaning".
+      // If a column is selected, maybe we want to drop dupes based on that column?
+      // For now, let's keep drop_duplicates global unless we implement a specific UI for it.
+      // But the requirement says "Remove Duplicates" in "Data Cleaning".
     }
-    
+
     if (op.id === 'knn_impute') {
-        // KNN usually applies to all numeric columns or specific ones. 
-        // For simplicity, let's apply to all numeric columns if no specific selection logic (backend handles filtering)
-        // Or if a column is selected and it's numeric, we could restrict it, but KNN is multivariate.
-        // Let's send empty columns to imply "all valid".
+      // KNN usually applies to all numeric columns or specific ones. 
+      // For simplicity, let's apply to all numeric columns if no specific selection logic (backend handles filtering)
+      // Or if a column is selected and it's numeric, we could restrict it, but KNN is multivariate.
+      // Let's send empty columns to imply "all valid".
     }
 
     onAddStep(opName, params);
@@ -127,19 +133,19 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
     // If types are specified, check them
     if (op.validTypes) {
       if (op.validTypes.includes('All')) return true;
-      
+
       // Strict type checking against backend types
       if (!columnType) return false;
-      
+
       // Backend types: 'Numeric', 'Date', 'Boolean', 'Categorical', 'Text'
       // Frontend map: 'String' matches 'Text' or 'Categorical'
       if (op.validTypes.includes(columnType)) return true;
-      
+
       if (op.validTypes.includes('String') && (columnType === 'Text' || columnType === 'Categorical')) return true;
-      
+
       return false;
     }
-    
+
     return true;
   };
 
@@ -158,21 +164,21 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
           )}
         </div>
       </div>
-      
+
       <div className="flex-1 overflow-y-auto p-2 space-y-4">
         {operations.map((group, idx) => (
           <div key={idx} className="space-y-1">
-            <button 
+            <button
               onClick={() => toggleGroup(group.title.toLowerCase())}
               className="flex items-center w-full px-2 py-1 text-[11px] font-bold text-gray-400 uppercase tracking-wide hover:text-white transition-colors bg-black/20 rounded-sm mb-1"
             >
-              {openGroups.includes(group.title.toLowerCase()) ? 
-                <ChevronDown className="h-3 w-3 mr-1" /> : 
+              {openGroups.includes(group.title.toLowerCase()) ?
+                <ChevronDown className="h-3 w-3 mr-1" /> :
                 <ChevronRight className="h-3 w-3 mr-1" />
               }
               {group.title}
             </button>
-            
+
             {openGroups.includes(group.title.toLowerCase()) && (
               <div className="grid gap-1 pl-1">
                 {group.operations.map(op => {
@@ -199,12 +205,23 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
           </div>
         ))}
       </div>
-      
-      <MergeDialog 
-        open={mergeDialogOpen} 
-        onOpenChange={setMergeDialogOpen} 
+
+      <MergeDialog
+        open={mergeDialogOpen}
+        onOpenChange={setMergeDialogOpen}
         currentDatasetId={currentDatasetId}
+        currentDatasetColumns={currentDatasetColumns}
         onMerge={(params) => onAddStep('merge', params)}
+      />
+
+      <ScaleDialog
+        open={scaleDialogOpen}
+        onOpenChange={setScaleDialogOpen}
+        onApply={(params) => {
+          if (selectedColumn) {
+            onAddStep('normalize', { ...params, columns: [selectedColumn] });
+          }
+        }}
       />
     </div>
   );

@@ -251,12 +251,19 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
     elif operation == "normalize":
         # Min-Max Scaling
         columns = params.get("columns", [])
+        feature_min = float(params.get("feature_min", 0.0))
+        feature_max = float(params.get("feature_max", 1.0))
         for col in columns:
             if pd.api.types.is_numeric_dtype(df[col]):
                 min_val = df[col].min()
                 max_val = df[col].max()
                 if max_val != min_val:
-                    df[col] = (df[col] - min_val) / (max_val - min_val)
+                    # Scale to 0-1
+                    std_val = (df[col] - min_val) / (max_val - min_val)
+                    # Scale to target
+                    df[col] = std_val * (feature_max - feature_min) + feature_min
+                else:
+                    df[col] = feature_min
     
     elif operation == "rename_columns":
         mapping = params.get("mapping", {})
@@ -289,6 +296,19 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
             if left_on and right_on:
                 # Ensure keys exist
                 if left_on in df.columns and right_on in other_df.columns:
+                    # Strict Type Validation for Merges
+                    left_type = df[left_on].dtype
+                    right_type = other_df[right_on].dtype
+                    
+                    is_left_num = pd.api.types.is_numeric_dtype(left_type)
+                    is_right_num = pd.api.types.is_numeric_dtype(right_type)
+                    
+                    is_left_str = pd.api.types.is_string_dtype(left_type) or pd.api.types.is_object_dtype(left_type)
+                    is_right_str = pd.api.types.is_string_dtype(right_type) or pd.api.types.is_object_dtype(right_type)
+                    
+                    if (is_left_num != is_right_num) and (is_left_str != is_right_str):
+                        raise InvalidColumnTypeError(f"Incompatible merge keys: '{left_on}' ({left_type}) and '{right_on}' ({right_type})")
+                        
                     # Rename overlapping columns to avoid collision if not joining on them
                     # Pandas adds suffixes automatically (_x, _y), but let's be explicit if needed?
                     # Default suffixes are fine for now.

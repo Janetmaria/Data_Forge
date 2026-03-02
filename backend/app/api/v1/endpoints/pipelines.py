@@ -137,6 +137,35 @@ def create_pipeline(
     db.refresh(pipeline)
     return pipeline
 
+@router.post("/{pipeline_id}/clone", response_model=schemas.Pipeline)
+def clone_pipeline(
+    *,
+    pipeline_id: str,
+    pipeline_data: dict = Body(...),
+    db: Session = Depends(deps.get_db),
+) -> Any:
+    """
+    Clone a draft pipeline into a saved template.
+    """
+    pipeline = db.query(models.Pipeline).filter(models.Pipeline.id == pipeline_id).first()
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+        
+    name = pipeline_data.get("name", f"Copy of {pipeline.name}")
+    description = pipeline_data.get("description", pipeline.description)
+    
+    new_pipeline = models.Pipeline(
+        id=str(uuid.uuid4()),
+        name=name,
+        description=description,
+        steps=pipeline.steps,
+        dataset_id=None, # Save as unattached template
+    )
+    db.add(new_pipeline)
+    db.commit()
+    db.refresh(new_pipeline)
+    return new_pipeline
+
 @router.put("/{pipeline_id}", response_model=schemas.Pipeline)
 def update_pipeline(
     *,

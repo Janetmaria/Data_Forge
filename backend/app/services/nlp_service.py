@@ -76,4 +76,18 @@ def parse_command(command: str) -> Dict[str, Any]:
         
         return {"operation": "text_case", "params": {"columns": [col], "case": case_type}}
 
+    # 8. Min-Max Scaling
+    scale_match = re.search(r"scale (.+?)(?: between (-?\d+(?:\.\d+)?) and (-?\d+(?:\.\d+)?))?$", cmd)
+    if scale_match:
+        col = scale_match.group(1).strip()
+        min_val = scale_match.group(2)
+        max_val = scale_match.group(3)
+        
+        params = {"columns": [col]}
+        if min_val is not None and max_val is not None:
+            params["feature_min"] = float(min_val)
+            params["feature_max"] = float(max_val)
+            
+        return {"operation": "normalize", "params": params}
+
     return None

@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import api from '@/lib/api';
 
@@ -10,7 +9,13 @@ interface MergeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   currentDatasetId: string;
+  currentDatasetColumns: any[];
   onMerge: (params: any) => void;
+}
+
+interface DatasetColumn {
+  name: string;
+  detected_type: string;
 }
 
 interface Dataset {
@@ -18,18 +23,25 @@ interface Dataset {
   original_filename: string;
   row_count: number;
   col_count: number;
+  columns: DatasetColumn[];
 }
 
-export function MergeDialog({ open, onOpenChange, currentDatasetId, onMerge }: MergeDialogProps) {
+export function MergeDialog({ open, onOpenChange, currentDatasetId, currentDatasetColumns, onMerge }: MergeDialogProps) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>('');
   const [mergeType, setMergeType] = useState<string>('inner');
   const [leftKey, setLeftKey] = useState<string>('');
   const [rightKey, setRightKey] = useState<string>('');
 
+  const [secondaryDatasetColumns, setSecondaryDatasetColumns] = useState<DatasetColumn[]>([]);
+
   useEffect(() => {
     if (open) {
       fetchDatasets();
+      setLeftKey('');
+      setRightKey('');
+      setSelectedDatasetId('');
+      setSecondaryDatasetColumns([]);
     }
   }, [open]);
 
@@ -43,22 +55,33 @@ export function MergeDialog({ open, onOpenChange, currentDatasetId, onMerge }: M
     }
   };
 
+  const handleDatasetSelect = (id: string) => {
+    setSelectedDatasetId(id);
+    setRightKey('');
+    const target = datasets.find(d => d.id === id);
+    if (target) {
+      setSecondaryDatasetColumns(target.columns || []);
+    } else {
+      setSecondaryDatasetColumns([]);
+    }
+  };
+
   const handleMerge = () => {
     if (!selectedDatasetId) return;
-    
+
     const params: any = {
       secondary_dataset_id: selectedDatasetId,
       how: mergeType
     };
 
     if (mergeType !== 'concat') {
-       if (leftKey) params.left_on = leftKey;
-       if (rightKey) params.right_on = rightKey;
-       // If only one key provided, assume same name? Or force both?
-       // Let's force both for clarity in this dialog, or if user leaves empty we assume index merge?
-       // For now, let's just pass what we have.
+      if (leftKey) params.left_on = leftKey;
+      if (rightKey) params.right_on = rightKey;
+      // If only one key provided, assume same name? Or force both?
+      // Let's force both for clarity in this dialog, or if user leaves empty we assume index merge?
+      // For now, let's just pass what we have.
     } else {
-        params.axis = 0; // Default vertical concat
+      params.axis = 0; // Default vertical concat
     }
 
     onMerge(params);
@@ -77,7 +100,7 @@ export function MergeDialog({ open, onOpenChange, currentDatasetId, onMerge }: M
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
             <Label>Select Dataset to Merge</Label>
-            <Select value={selectedDatasetId} onValueChange={setSelectedDatasetId}>
+            <Select value={selectedDatasetId} onValueChange={handleDatasetSelect}>
               <SelectTrigger className="bg-[#2d2d2d] border-black/50 text-gray-300">
                 <SelectValue placeholder="Select a dataset..." />
               </SelectTrigger>
@@ -111,21 +134,33 @@ export function MergeDialog({ open, onOpenChange, currentDatasetId, onMerge }: M
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
                 <Label>Left Key (Current)</Label>
-                <Input 
-                  value={leftKey} 
-                  onChange={(e) => setLeftKey(e.target.value)} 
-                  placeholder="Column name"
-                  className="bg-[#2d2d2d] border-black/50 text-gray-300"
-                />
+                <Select value={leftKey} onValueChange={setLeftKey}>
+                  <SelectTrigger className="bg-[#2d2d2d] border-black/50 text-gray-300">
+                    <SelectValue placeholder="Select column..." />
+                  </SelectTrigger>
+                  <SelectContent className="bg-[#2d2d2d] border-black/50 text-gray-300">
+                    {currentDatasetColumns?.map(c => (
+                      <SelectItem key={c.name} value={c.name}>
+                        {c.name} <span className="text-[10px] text-gray-500">({c.detected_type})</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="grid gap-2">
                 <Label>Right Key (New)</Label>
-                <Input 
-                  value={rightKey} 
-                  onChange={(e) => setRightKey(e.target.value)} 
-                  placeholder="Column name"
-                  className="bg-[#2d2d2d] border-black/50 text-gray-300"
-                />
+                <Select value={rightKey} onValueChange={setRightKey} disabled={!selectedDatasetId}>
+                  <SelectTrigger className="bg-[#2d2d2d] border-black/50 text-gray-300">
+                    <SelectValue placeholder="Select column..." />
+                  </SelectTrigger>
+                  <SelectContent className="bg-[#2d2d2d] border-black/50 text-gray-300">
+                    {secondaryDatasetColumns?.map(c => (
+                      <SelectItem key={c.name} value={c.name}>
+                        {c.name} <span className="text-[10px] text-gray-500">({c.detected_type})</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           )}
