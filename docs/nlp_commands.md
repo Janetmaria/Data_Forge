@@ -11,20 +11,25 @@ DataForge includes a natural language command console. Type commands in plain En
 |---|---|
 | `drop duplicates` | Remove duplicate rows |
 | `drop missing` | Drop all rows with any null |
+| `drop missing from age` | Drop rows where specific column `age` is null |
+| `drop column ssn` | Delete a specific column |
+| `delete column ssn` | Delete a specific column |
 
 ### Filling Missing Values
 | Command | Operation |
 |---|---|
-| `fill age with mean` | Fill missing values using column mean |
-| `fill salary with median` | Fill using median |
-| `fill department with mode` | Fill using most common value |
+| `fill missing in age with mean` | Fill missing values using column mean |
+| `fill missing in salary with median` | Fill using median |
+| `fill missing in department with mode` | Fill using most common value |
 | `fill phone with Unknown` | Fill with a custom constant value |
 
-### Type Conversion
+### Type Conversion & Formatting
 | Command | Operation |
 |---|---|
-| `convert age to numeric` | Convert column to numeric |
-| `convert name to string` | Convert column to string |
+| `convert age to numeric` | Convert column to numeric (supports float/int/number) |
+| `convert name to string` | Convert column to text/string |
+| `convert join_date to date` | Convert column to datetime |
+| `round score to 2 decimal places` | Round numeric column to X decimals |
 | `uppercase department` | Convert text to uppercase |
 | `lowercase name` | Convert text to lowercase |
 | `titlecase name` | Convert text to title case |
@@ -34,8 +39,8 @@ DataForge includes a natural language command console. Type commands in plain En
 |---|---|
 | `scale salary` | Min-Max scale to 0–1 |
 | `scale salary between 4 and 5` | Min-Max scale to custom range |
-| `zscore salary` | Z-Score (standard) scaling |
 | `standard scale salary` | Z-Score (standard) scaling |
+| `zscore salary` | Z-Score (standard) scaling |
 
 ### Outlier Removal
 | Command | Operation |
@@ -50,6 +55,7 @@ DataForge includes a natural language command console. Type commands in plain En
 | `parse date created_at` | Same as above |
 
 ### Time-Series Fill
+*(Currently available via UI/API, NLP support planned)*
 | Command | Operation |
 |---|---|
 | `ffill price` | Forward-fill missing values |
@@ -59,7 +65,7 @@ DataForge includes a natural language command console. Type commands in plain En
 | Command | Operation |
 |---|---|
 | `validate email format in contact` | Validate email format, set invalid to null |
-| `validate phone format in mobile` | Validate phone numbers |
+| `validate phone in mobile` | Validate phone numbers |
 | `validate url in website` | Validate URLs |
 | `validate ip in server_address` | Validate IP addresses |
 | `validate aadhaar in id_col` | Validate Aadhaar card numbers |

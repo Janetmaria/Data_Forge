@@ -69,6 +69,21 @@ def auto_format_date_columns(df: pd.DataFrame) -> pd.DataFrame:
             if not re.search(r'[a-zA-Z]{3}|\d{2,4}', val):
                 return None
             clean_val = re.sub(r'(?i)(Purchased on|Order #[0-9]+ - |Date:|Originally:|On)', '', str(val)).strip()
+            
+            # Stricter rejection rules
+            if not re.search(r'[-/.,:]', clean_val) and not re.search(r'(?i)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)', clean_val):
+                # Not a recognized format unless it's exactly 8 digits YYYYMMDD
+                if not re.match(r'^\d{8}$', clean_val):
+                    return None
+                    
+            # Reject things that look like pure alphanumeric IDs even if they have a dash (e.g. EMP-001)
+            if re.match(r'^[A-Za-z]+[-_]?\d+$', clean_val):
+                return None
+                
+            # Reject simple number values that are not 8 digits
+            if re.match(r'^\d+$', clean_val) and len(clean_val) != 8:
+                return None
+                
             dt = parser.parse(clean_val, fuzzy=True)
             if 1900 < dt.year < 2100:
                 return dt.strftime('%Y-%m-%d')
