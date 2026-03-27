@@ -279,7 +279,6 @@ export default function DatasetDetailsPage() {
           <div className="w-72 shrink-0 overflow-hidden z-20 shadow-xl border-l border-teal-900/40 flex flex-col" style={{ order: 2 }}>
             <DataQualityPanel
               alerts={dataset.quality_alerts || []}
-              onAddStep={handleAddStep}
               onClose={() => setQualityPanelOpen(false)}
             />
           </div>

@@ -1,6 +1,5 @@
 import { useState, useMemo } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, X, Zap } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { AlertTriangle, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface QualityAlert {
@@ -12,7 +11,6 @@ interface QualityAlert {
 
 interface DataQualityPanelProps {
     alerts: QualityAlert[];
-    onAddStep: (operation: string, params: any) => Promise<void>;
     onClose: () => void;
 }
 
@@ -31,42 +29,20 @@ const ALERT_META: Record<string, { label: string; color: string; icon: string; s
     high_cardinality:        { label: 'High Cardinality',        color: 'text-yellow-400', icon: '⚡', severity: 'low'    },
 };
 
-function getQuickFix(alert: QualityAlert): { label: string; op: string; params: any } | null {
-    switch (alert.type) {
-        case 'duplicate_rows':
-            return { label: 'Drop Duplicates', op: 'drop_duplicates', params: {} };
-        case 'outliers':
-            return { label: 'Remove Outliers', op: 'remove_outliers', params: { columns: [alert.entity] } };
-        case 'mixed_type_numeric':
-        case 'mixed_type_worded':
-            return { label: 'Convert to Numeric', op: 'convert_type', params: { columns: [alert.entity], type: 'text_to_numeric' } };
-        case 'invalid_numeric_format':
-            return { label: 'Convert to Numeric', op: 'convert_type', params: { columns: [alert.entity], type: 'numeric' } };
-        case 'invalid_date_format':
-            return { label: 'Convert to Date', op: 'convert_type', params: { columns: [alert.entity], type: 'date' } };
-        // missing_values, placeholder_values, class_imbalance, skewed_distribution, constant_column,
-        // high_cardinality — no single generic fix; user must choose the right strategy.
-        default:
-            return null;
-    }
-}
-
 function severity(type: string): number {
     const s = ALERT_META[type]?.severity;
     return s === 'high' ? 0 : s === 'medium' ? 1 : 2;
 }
 
-export function DataQualityPanel({ alerts, onAddStep, onClose }: DataQualityPanelProps) {
+export function DataQualityPanel({ alerts, onClose }: DataQualityPanelProps) {
     const [expandedCols, setExpandedCols] = useState<Set<string>>(new Set());
 
-    // Group alerts by entity (column)
     const grouped = useMemo(() => {
         const map: Record<string, QualityAlert[]> = {};
         alerts.forEach(a => {
             if (!map[a.entity]) map[a.entity] = [];
             map[a.entity].push(a);
         });
-        // Sort each group by severity
         return Object.entries(map)
             .sort(([, a], [, b]) =>
                 Math.min(...a.map(x => severity(x.type))) - Math.min(...b.map(x => severity(x.type)))
@@ -82,17 +58,17 @@ export function DataQualityPanel({ alerts, onAddStep, onClose }: DataQualityPane
     };
 
     const highCount = alerts.filter(a => ALERT_META[a.type]?.severity === 'high').length;
-    const medCount = alerts.filter(a => ALERT_META[a.type]?.severity === 'medium').length;
+    const medCount  = alerts.filter(a => ALERT_META[a.type]?.severity === 'medium').length;
 
     return (
         <div className="flex flex-col h-full bg-[#0e1a1a] border-l border-teal-900/40 text-xs">
             {/* Header */}
-            <div className="flex items-center justify-between px-3 py-2 bg-[#152020] border-b border-teal-900/40 shrink-0">
+            <div className="flex items-center justify-between px-3 py-1.5 bg-[#152020] border-b border-teal-900/40 shrink-0">
                 <div className="flex items-center gap-2">
                     <AlertTriangle className="h-3.5 w-3.5 text-orange-400 shrink-0" />
-                    <span className="font-bold text-gray-200 text-[11px] uppercase tracking-wider">Data Quality Report</span>
+                    <span className="font-bold text-gray-200 text-[11px] uppercase tracking-wider">Data Quality</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
                     {highCount > 0 && (
                         <span className="px-1.5 py-0.5 rounded bg-red-900/40 text-red-400 font-bold text-[10px]">{highCount} HIGH</span>
                     )}
@@ -106,8 +82,8 @@ export function DataQualityPanel({ alerts, onAddStep, onClose }: DataQualityPane
             </div>
 
             {alerts.length === 0 ? (
-                <div className="flex flex-col items-center justify-center flex-1 gap-2 text-gray-600 p-4">
-                    <span className="text-2xl">✅</span>
+                <div className="flex flex-col items-center justify-center flex-1 gap-1.5 text-gray-600 p-4">
+                    <span className="text-xl">✅</span>
                     <p className="text-[11px]">No quality issues detected!</p>
                 </div>
             ) : (
@@ -118,24 +94,24 @@ export function DataQualityPanel({ alerts, onAddStep, onClose }: DataQualityPane
                             ? 'high' : colAlerts.some(a => ALERT_META[a.type]?.severity === 'medium')
                                 ? 'medium' : 'low';
                         const severityColor = topSeverity === 'high' ? 'text-red-400' : topSeverity === 'medium' ? 'text-orange-400' : 'text-yellow-400';
-                        const severityBg = topSeverity === 'high' ? 'bg-red-900/20' : topSeverity === 'medium' ? 'bg-orange-900/15' : 'bg-yellow-900/10';
+                        const severityBg    = topSeverity === 'high' ? 'bg-red-900/20'  : topSeverity === 'medium' ? 'bg-orange-900/15' : 'bg-yellow-900/10';
 
                         return (
                             <div key={col}>
                                 {/* Column row */}
                                 <button
                                     onClick={() => toggleCol(col)}
-                                    className={cn("w-full flex items-center gap-2 px-3 py-2 hover:bg-white/5 transition-colors text-left", severityBg)}
+                                    className={cn("w-full flex items-center gap-2 px-3 py-1.5 hover:bg-white/5 transition-colors text-left", severityBg)}
                                 >
                                     {isOpen
-                                        ? <ChevronDown className={cn("h-3 w-3 shrink-0", severityColor)} />
+                                        ? <ChevronDown  className={cn("h-3 w-3 shrink-0", severityColor)} />
                                         : <ChevronRight className={cn("h-3 w-3 shrink-0", severityColor)} />
                                     }
                                     <span className="font-mono font-semibold text-gray-200 truncate flex-1">{col}</span>
                                     <span className={cn("text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0",
-                                        topSeverity === 'high' ? 'text-red-400 bg-red-900/30' :
-                                            topSeverity === 'medium' ? 'text-orange-400 bg-orange-900/30' :
-                                                'text-yellow-400 bg-yellow-900/30'
+                                        topSeverity === 'high'   ? 'text-red-400 bg-red-900/30' :
+                                        topSeverity === 'medium' ? 'text-orange-400 bg-orange-900/30' :
+                                                                   'text-yellow-400 bg-yellow-900/30'
                                     )}>
                                         {colAlerts.length} {colAlerts.length === 1 ? 'issue' : 'issues'}
                                     </span>
@@ -146,35 +122,20 @@ export function DataQualityPanel({ alerts, onAddStep, onClose }: DataQualityPane
                                     <div className="bg-[#0a1515] border-t border-teal-900/20 divide-y divide-teal-900/10">
                                         {colAlerts.map((alert, i) => {
                                             const meta = ALERT_META[alert.type];
-                                            const fix = getQuickFix(alert);
                                             return (
-                                                <div key={i} className="px-4 py-2">
-                                                    <div className="flex items-start gap-2">
-                                                        <span className={cn("text-[11px] shrink-0 mt-px", meta?.color || 'text-gray-400')}>
-                                                            {meta?.icon || '•'}
-                                                        </span>
-                                                        <div className="flex-1 min-w-0">
-                                                            <p className={cn("font-semibold text-[10px]", meta?.color || 'text-gray-400')}>
-                                                                {meta?.label || alert.type}
-                                                            </p>
+                                                <div key={i} className="flex items-start gap-2 px-4 py-1.5">
+                                                    <span className={cn("text-[11px] shrink-0 mt-px", meta?.color || 'text-gray-400')}>
+                                                        {meta?.icon || '•'}
+                                                    </span>
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className={cn("font-semibold text-[10px]", meta?.color || 'text-gray-400')}>
+                                                            {meta?.label || alert.type}
                                                             {alert.missing_pct > 0 && (
-                                                                <p className="text-gray-500 text-[10px] mt-0.5">
-                                                                    Affects {alert.missing_pct.toFixed(1)}% of rows
-                                                                </p>
+                                                                <span className="text-gray-500 font-normal"> — {alert.missing_pct.toFixed(1)}% of rows</span>
                                                             )}
-                                                            <p className="text-gray-600 text-[9px] mt-0.5 italic">{alert.recommended_action}</p>
-                                                        </div>
+                                                        </p>
+                                                        <p className="text-gray-600 text-[9px] mt-0.5 italic">{alert.recommended_action}</p>
                                                     </div>
-                                                    {fix && (
-                                                        <Button
-                                                            variant="ghost"
-                                                            size="sm"
-                                                            className="mt-1.5 h-5 text-[9px] px-2 text-teal-400 border border-teal-900/50 hover:bg-teal-900/20 hover:text-teal-300 gap-1"
-                                                            onClick={() => onAddStep(fix.op, fix.params)}
-                                                        >
-                                                            <Zap className="h-2.5 w-2.5" /> {fix.label}
-                                                        </Button>
-                                                    )}
                                                 </div>
                                             );
                                         })}
@@ -186,8 +147,8 @@ export function DataQualityPanel({ alerts, onAddStep, onClose }: DataQualityPane
                 </div>
             )}
 
-            {/* Footer summary */}
-            <div className="px-3 py-1.5 border-t border-teal-900/40 bg-[#0a1515] shrink-0">
+            {/* Footer */}
+            <div className="px-3 py-1 border-t border-teal-900/40 bg-[#0a1515] shrink-0">
                 <p className="text-[9px] text-gray-600">
                     {alerts.length} issue{alerts.length !== 1 ? 's' : ''} across {grouped.length} column{grouped.length !== 1 ? 's' : ''}
                 </p>
