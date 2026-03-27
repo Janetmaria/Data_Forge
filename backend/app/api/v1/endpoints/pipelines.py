@@ -186,6 +186,22 @@ def update_pipeline(
     db.refresh(pipeline)
     return pipeline
 
+@router.delete("/{pipeline_id}", status_code=204)
+def delete_pipeline(
+    pipeline_id: str,
+    db: Session = Depends(deps.get_db),
+) -> None:
+    """
+    Permanently delete a saved pipeline by ID.
+    Draft pipelines (name == 'Draft Pipeline') are also deletable via this endpoint.
+    """
+    pipeline = db.query(models.Pipeline).filter(models.Pipeline.id == pipeline_id).first()
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    db.delete(pipeline)
+    db.commit()
+
+
 @router.get("/{pipeline_id}/export")
 def export_pipeline_json(
     pipeline_id: str,

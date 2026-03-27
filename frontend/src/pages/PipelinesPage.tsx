@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import api from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Play, Edit, Clock, Download, Upload } from 'lucide-react';
+import { ArrowLeft, Play, Edit, Clock, Download, Upload, Trash2, AlertTriangle } from 'lucide-react';
 
 interface Pipeline {
   id: string;
@@ -12,12 +12,14 @@ interface Pipeline {
   dataset_id: string;
   created_at: string;
   updated_at: string;
-  steps: string; // JSON string
+  steps: string;
 }
 
 export default function PipelinesPage() {
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);   // which card shows confirm
+  const [deletingInProgress, setDeletingInProgress] = useState<string | null>(null); // pending API call
 
   useEffect(() => {
     fetchPipelines();
@@ -47,8 +49,8 @@ export default function PipelinesPage() {
       link.click();
       document.body.removeChild(link);
     } catch (err) {
-      console.error("Export failed", err);
-      alert("Failed to export pipeline");
+      console.error('Export failed', err);
+      alert('Failed to export pipeline');
     }
   };
 
@@ -61,14 +63,31 @@ export default function PipelinesPage() {
       try {
         const json = JSON.parse(event.target?.result as string);
         await api.post('/pipelines/import', json);
-        fetchPipelines(); // Refresh list
-        alert("Pipeline template imported successfully!");
+        fetchPipelines();
+        alert('Pipeline template imported successfully!');
       } catch (err) {
-        console.error("Import failed", err);
-        alert("Invalid pipeline file");
+        console.error('Import failed', err);
+        alert('Invalid pipeline file');
       }
     };
     reader.readAsText(file);
+  };
+
+  const handleDeleteConfirm = (id: string) => setDeletingId(id);
+  const handleDeleteCancel  = () => setDeletingId(null);
+
+  const handleDeleteExecute = async (id: string) => {
+    try {
+      setDeletingInProgress(id);
+      await api.delete(`/pipelines/${id}`);
+      setPipelines(prev => prev.filter(p => p.id !== id));
+    } catch (err) {
+      console.error('Delete failed', err);
+      alert('Failed to delete pipeline');
+    } finally {
+      setDeletingId(null);
+      setDeletingInProgress(null);
+    }
   };
 
   if (loading) return <div className="p-8 text-center text-muted-foreground">Loading pipelines...</div>;
@@ -88,7 +107,11 @@ export default function PipelinesPage() {
           </div>
         </div>
         <div>
-          <Button onClick={() => document.getElementById('pipeline-upload')?.click()} variant="outline" className="bg-[#1e1e1e] border-black/50 text-gray-300 hover:bg-[#2d2d2d] hover:text-white">
+          <Button
+            onClick={() => document.getElementById('pipeline-upload')?.click()}
+            variant="outline"
+            className="bg-[#1e1e1e] border-black/50 text-gray-300 hover:bg-[#2d2d2d] hover:text-white"
+          >
             <Upload className="mr-2 h-4 w-4" /> Import Template
           </Button>
           <input
@@ -107,52 +130,117 @@ export default function PipelinesPage() {
             <p className="text-gray-500">No pipelines found. Create one by editing a dataset.</p>
           </div>
         ) : (
-          pipelines.map((pipeline) => (
-            <Card key={pipeline.id} className="bg-[#1e1e1e] border-black/50 hover:border-gray-600 transition-colors flex flex-col">
-              <CardHeader>
-                <CardTitle className="text-lg text-gray-200">{pipeline.name}</CardTitle>
-                <CardDescription className="text-gray-500 text-xs">
-                  {pipeline.description || "No description"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex-1">
-                <div className="text-xs text-gray-400 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-3 w-3" />
-                    Updated: {new Date(pipeline.updated_at).toLocaleDateString()}
-                  </div>
-                  {pipeline.dataset_id && (
+          pipelines.map((pipeline) => {
+            const isConfirming = deletingId === pipeline.id;
+            const isDeleting   = deletingInProgress === pipeline.id;
+            let stepCount = 0;
+            try { stepCount = JSON.parse(pipeline.steps || '[]').length; } catch {}
+
+            return (
+              <Card
+                key={pipeline.id}
+                className="bg-[#1e1e1e] border-black/50 hover:border-gray-600 transition-colors flex flex-col relative"
+              >
+                <CardHeader>
+                  <CardTitle className="text-lg text-gray-200">{pipeline.name}</CardTitle>
+                  <CardDescription className="text-gray-500 text-xs">
+                    {pipeline.description || 'No description'}
+                  </CardDescription>
+                </CardHeader>
+
+                <CardContent className="flex-1">
+                  <div className="text-xs text-gray-400 space-y-1">
                     <div className="flex items-center gap-2">
-                      <Edit className="h-3 w-3" />
-                      Dataset: {pipeline.dataset_id.substring(0, 8)}...
+                      <Clock className="h-3 w-3" />
+                      Updated: {new Date(pipeline.updated_at).toLocaleDateString()}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Play className="h-3 w-3" />
+                      {stepCount} step{stepCount !== 1 ? 's' : ''}
+                    </div>
+                    {pipeline.dataset_id ? (
+                      <div className="flex items-center gap-2">
+                        <Edit className="h-3 w-3" />
+                        Dataset: {pipeline.dataset_id.substring(0, 8)}…
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-teal-400">
+                        <Upload className="h-3 w-3" />
+                        Template (Unattached)
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+
+                <CardFooter className="flex gap-2 border-t border-black/20 pt-4">
+                  {/* ── Normal actions ── */}
+                  {!isConfirming && (
+                    <>
+                      {pipeline.dataset_id ? (
+                        <Link to={`/datasets/${pipeline.dataset_id}`} className="flex-1">
+                          <Button variant="secondary" className="w-full bg-[#2d2d2d] hover:bg-[#3e3e3e] text-gray-300">
+                            <Play className="mr-2 h-3 w-3" /> Resume
+                          </Button>
+                        </Link>
+                      ) : (
+                        <Button disabled variant="secondary" className="flex-1 bg-[#2d2d2d] text-gray-500 cursor-not-allowed">
+                          Apply in Workspace
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => handleExport(pipeline)}
+                        className="bg-[#1e1e1e] border-black/50 text-gray-400 hover:text-white"
+                        title="Export pipeline JSON"
+                      >
+                        <Download className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => handleDeleteConfirm(pipeline.id)}
+                        className="bg-[#1e1e1e] border-red-900/40 text-red-500/70 hover:text-red-400 hover:border-red-700 hover:bg-red-950/30"
+                        title="Delete pipeline"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </>
+                  )}
+
+                  {/* ── Delete confirmation ── */}
+                  {isConfirming && (
+                    <div className="flex flex-col gap-2 w-full">
+                      <div className="flex items-center gap-1.5 text-red-400 text-xs font-medium">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        Delete "{pipeline.name}"? This cannot be undone.
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="flex-1 h-7 text-xs bg-red-700 hover:bg-red-600"
+                          disabled={isDeleting}
+                          onClick={() => handleDeleteExecute(pipeline.id)}
+                        >
+                          {isDeleting ? 'Deleting…' : 'Yes, Delete'}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 h-7 text-xs bg-[#1e1e1e] border-black/50 text-gray-400 hover:text-white"
+                          disabled={isDeleting}
+                          onClick={handleDeleteCancel}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
                     </div>
                   )}
-                  {!pipeline.dataset_id && (
-                    <div className="flex items-center gap-2 text-teal-400">
-                      <Upload className="h-3 w-3" />
-                      Template (Unattached)
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-              <CardFooter className="flex gap-2 border-t border-black/20 pt-4">
-                {pipeline.dataset_id ? (
-                  <Link to={`/datasets/${pipeline.dataset_id}`} className="flex-1">
-                    <Button variant="secondary" className="w-full bg-[#2d2d2d] hover:bg-[#3e3e3e] text-gray-300">
-                      <Play className="mr-2 h-3 w-3" /> Resume
-                    </Button>
-                  </Link>
-                ) : (
-                  <Button disabled variant="secondary" className="flex-1 bg-[#2d2d2d] text-gray-500 cursor-not-allowed">
-                    Apply in Workspace
-                  </Button>
-                )}
-                <Button variant="outline" size="icon" onClick={() => handleExport(pipeline)} className="bg-[#1e1e1e] border-black/50 text-gray-400 hover:text-white">
-                  <Download className="h-4 w-4" />
-                </Button>
-              </CardFooter>
-            </Card>
-          ))
+                </CardFooter>
+              </Card>
+            );
+          })
         )}
       </div>
     </div>
