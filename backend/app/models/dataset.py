@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Text
+from sqlalchemy import Column, String, Integer, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
@@ -17,6 +17,7 @@ class Dataset(Base):
     row_count = Column(Integer, nullable=False)
     col_count = Column(Integer, nullable=False)
     size_bytes = Column(Integer, nullable=False)
+    domain = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # Relationships

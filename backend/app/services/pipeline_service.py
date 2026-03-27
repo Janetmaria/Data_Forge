@@ -7,6 +7,13 @@ from typing import Dict, Any, List, Optional
 from num2words import num2words
 from word2number import w2n
 
+from app.services.missingness_indicator import add_missingness_indicator
+from app.services.encoder import encode_column
+from app.services.outlier_handler import handle_outliers
+from app.services.imbalance_handler import handle_imbalance
+from app.services.binner import bin_column
+from app.services.timeseries_features import extract_datetime_components, create_lag_features, create_rolling_features
+
 STRICT_MODE = True
 
 class TypeMutationError(Exception):
@@ -294,7 +301,7 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
         patterns = {
             "email": r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)",
             "phone": r"(^\+?[\d\s\-\(\)]{7,20}$)",
-            "url": r"^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$",
+            "url": r"^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\\/\w \.-]*)*\/?$",
             "ip_address": r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$",
             "credit_card": r"^(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|6(?:011|5[0-9][0-9])[0-9]{12}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})$",
             "aadhaar": r"^\s*[2-9]{1}[0-9]{3}[\s-]?[0-9]{4}[\s-]?[0-9]{4}\s*$",
@@ -316,6 +323,57 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
                 elif action == "set_null":
                     # Keep the row but blast the invalid cell
                     df.loc[~is_valid, col] = np.nan
+
+    elif operation == "extract_numeric":
+        """
+        Smart-parse a numeric value out of messy strings like:
+          '$4308.85'       -> 4308.85  (keep)
+          '3868.9 usd'     -> 3868.9   (keep)
+          'Price: 45.0'    -> 45.0     (keep)
+          'Rs. 1,234.56'   -> 1234.56  (keep)
+          '34675 usd!!!'   -> invalid  (null/drop)
+          'FREE'           -> invalid  (null/drop)
+        Logic: strip known noise (currency symbols, labels, whitespace, commas),
+        then extract the first number pattern. If what remains after extracting
+        the number contains ONLY known harmless chars (letters, spaces, known symbols),
+        it's valid. If it contains junk like !!!, ???, etc., it's invalid.
+        on_invalid: 'null' (set cell to NaN, keep row) | 'drop' (remove row entirely)
+        """
+        import re
+        columns = params.get("columns", [])
+        on_invalid = params.get("on_invalid", "null")  # 'null' or 'drop'
+
+        # Regex to extract a number (optional sign, digits, optional decimal)
+        NUMBER_RE = re.compile(r'[-+]?\d[\d,]*(?:\.\d+)?')
+        # Allowed surrounding characters: letters (currency names, labels), spaces, common symbols
+        ALLOWED_NOISE_RE = re.compile(r'^[\w\s$€£₹¥₩₪%,.\-\+\/\(\)@#&:]*$')
+
+        def try_extract(val):
+            if pd.isnull(val):
+                return np.nan
+            s = str(val).strip()
+            if not s:
+                return np.nan
+            # Find a numeric pattern
+            match = NUMBER_RE.search(s)
+            if not match:
+                return np.nan  # No number found at all (e.g. 'FREE', 'N/A')
+            # Check the surrounding noise for garbage characters
+            noise = s[:match.start()] + s[match.end():]
+            if not ALLOWED_NOISE_RE.match(noise):
+                return np.nan  # Garbage chars in the noise (e.g. '!!!')
+            # Convert commas in number (e.g. '1,234.56' -> 1234.56)
+            num_str = match.group(0).replace(',', '')
+            try:
+                return float(num_str)
+            except ValueError:
+                return np.nan
+
+        for col in columns:
+            if col in df.columns:
+                df[col] = df[col].apply(try_extract)
+                if on_invalid == "drop":
+                    df = df.dropna(subset=[col])
 
     elif operation == "remove_outliers_iqr":
         columns = params.get("columns", [])
@@ -415,11 +473,124 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
             other_df = context[secondary_id]
             df = pd.concat([df, other_df], axis=axis, ignore_index=True)
 
+    elif operation == 'add_missingness_indicator':
+        df, _ = add_missingness_indicator(
+            df=df,
+            columns=params['columns'],
+            drop_original=params.get('drop_original', False),
+        )
+
+    elif operation == 'encode_categorical':
+        df, _ = encode_column(
+            df=df, column=params['column'], method=params['method'],
+            ordered_categories=params.get('ordered_categories'),
+            target_column=params.get('target_column'),
+            drop_first=params.get('drop_first', True),
+            max_categories=params.get('max_categories', 50),
+        )
+
+    elif operation == 'handle_outliers':
+        df, _ = handle_outliers(
+            df=df, columns=params['columns'],
+            method=params.get('method','iqr'), fold=params.get('fold',1.5),
+            strategy=params.get('strategy','cap'),
+        )
+
+    elif operation == 'handle_imbalance':
+        target_col = params['target_column']
+        # Re-derive feature columns from the *live* df at execution time.
+        # The params snapshot may be stale (columns dropped / added by prior steps).
+        # Rules:
+        #   1. Must currently exist in df
+        #   2. Must be numeric (SMOTE only works on numeric features)
+        #   3. Must not be the target column
+        #   4. Honour an optional explicit exclude list
+        explicit_cols = params.get('feature_columns') or []
+        exclude = set(params.get('exclude_columns', []))
+        exclude.add(target_col)
+
+        if explicit_cols:
+            # Filter the explicit list down to columns that still exist and are numeric
+            feature_cols = [
+                c for c in explicit_cols
+                if c in df.columns
+                and pd.api.types.is_numeric_dtype(df[c])
+                and c not in exclude
+            ]
+        else:
+            # Auto-detect: all numeric columns except the target
+            feature_cols = [
+                c for c in df.columns
+                if pd.api.types.is_numeric_dtype(df[c]) and c not in exclude
+            ]
+
+        if not feature_cols:
+            raise ValueError(
+                "handle_imbalance: no valid numeric feature columns found. "
+                "Encode categorical columns and impute missing values first."
+            )
+
+        # Auto-clamp k_neighbors so SMOTE doesn't crash on small minority classes.
+        # e.g. if minority class has 3 rows, k_neighbors must be at most 2.
+        requested_k = params.get('k_neighbors', 5)
+        strategy = params.get('strategy', 'smote')
+        if strategy in ('smote', 'smote_then_undersample'):
+            from collections import Counter
+            class_counts = Counter(df[target_col].dropna())
+            if class_counts:
+                min_class_size = min(class_counts.values())
+                safe_k = max(1, min(requested_k, min_class_size - 1))
+                if safe_k != requested_k:
+                    print(f"[handle_imbalance] Auto-adjusted k_neighbors from {requested_k} → {safe_k} "
+                          f"(minority class size = {min_class_size})")
+            else:
+                safe_k = requested_k
+        else:
+            safe_k = requested_k
+
+        df, _ = handle_imbalance(
+            df=df, target_col=target_col, feature_cols=feature_cols,
+            strategy=strategy,
+            k_neighbors=safe_k,
+            sampling_strategy=params.get('sampling_strategy', 'auto'),
+        )
+
+    elif operation == 'bin_column':
+        df, _ = bin_column(
+            df=df, column=params['column'], strategy=params.get('strategy','equal_width'),
+            n_bins=params.get('n_bins',5), labels=params.get('labels'),
+            custom_boundaries=params.get('custom_boundaries'), output_column=params.get('output_column'),
+            drop_original=params.get('drop_original',False),
+        )
+
+    elif operation == 'extract_datetime_components':
+        df, _ = extract_datetime_components(
+            df=df, column=params['column'],
+            components=params['components'])
+
+    elif operation == 'create_lag_features':
+        df, _ = create_lag_features(
+            df=df, column=params['column'], lags=params['lags'], sort_by=params.get('sort_by'))
+
+    elif operation == 'create_rolling_features':
+        df, _ = create_rolling_features(
+            df=df, column=params['column'], windows=params['windows'],
+            stats=params.get('stats',['mean','std']),
+            min_periods=params.get('min_periods',1), sort_by=params.get('sort_by'))
+
     # Post-Execution Type Check
     types_after = df.dtypes.apply(lambda x: str(x)).to_dict()
     
     # We allow intentional type conversions
-    if operation != "convert_type":
+    # Operations that intentionally change column dtypes are excluded from the strict
+    # float→object type mutation guard. bin_column produces string labels from floats,
+    # encode_categorical produces int/float from strings, extract_datetime_components
+    # extracts numeric components from dates.
+    INTENTIONAL_TYPE_CHANGE_OPS = (
+        "convert_type", "extract_numeric", "bin_column",
+        "encode_categorical", "extract_datetime_components",
+    )
+    if operation not in INTENTIONAL_TYPE_CHANGE_OPS:
         for col, dtype_pre in types_before.items():
             if col in types_after:
                 dtype_post = types_after[col]
@@ -444,5 +615,14 @@ def execute_pipeline(df: pd.DataFrame, steps: List[Dict[str, Any]], context: Opt
         if "operation" not in step:
             raise PipelineSchemaError("Step missing required field 'operation'")
             
-        df = execute_step(df, step, context)
+        try:
+            df = execute_step(df, step, context)
+        except Exception as e:
+            # If a step fails, print the error and stop the pipeline execution,
+            # but crucially, RETURN the dataframe up to this point. 
+            # This prevents the entire workspace from bricking with a 422 if a saved
+            # step becomes invalid, allowing the user to delete the bad step in the UI.
+            print(f"Pipeline Execution Error at step '{step.get('operation')}': {e}")
+            break
+            
     return df

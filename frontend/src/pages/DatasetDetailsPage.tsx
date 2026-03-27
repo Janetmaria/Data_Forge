@@ -1,14 +1,17 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Download, AlertTriangle, Save, Upload } from 'lucide-react';
+import { ArrowLeft, Download, AlertTriangle, Save, Upload, GitCompare, Database } from 'lucide-react';
 import { WorkspaceLayout } from '@/layouts/WorkspaceLayout';
 import { Sidebar } from '@/components/workspace/Sidebar';
 import { PreviewPanel } from '@/components/workspace/PreviewPanel';
 import { LogPanel } from '@/components/workspace/LogPanel';
 import { SavePipelineDialog } from '@/components/workspace/SavePipelineDialog';
 import { ApplyTemplateDialog } from '@/components/workspace/ApplyTemplateDialog';
+import { DataQualityPanel } from '@/components/workspace/DataQualityPanel';
+import { BeforeAfterModal } from '@/components/workspace/BeforeAfterModal';
+import InferencePanel from '@/components/workspace/InferencePanel';
 
 interface QualityAlert {
   entity: string;
@@ -29,6 +32,7 @@ interface Dataset {
   row_count: number;
   col_count: number;
   file_format: string;
+  domain?: string | null;
   columns: DatasetColumn[];
   quality_alerts: QualityAlert[];
 }
@@ -48,6 +52,16 @@ export default function DatasetDetailsPage() {
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [applyTemplateDialogOpen, setApplyTemplateDialogOpen] = useState(false);
 
+  // Feature 2: Quality panel
+  const [qualityPanelOpen, setQualityPanelOpen] = useState(false);
+
+  // Feature 3: Before/After tracking
+  const beforeSnapshotRef = useRef<any[]>([]);
+  const [compareData, setCompareData] = useState<{ before: any[]; after: any[]; column: string } | null>(null);
+
+  // Feature 4: Expert Inference Modal
+  const [inferenceDialogOpen, setInferenceDialogOpen] = useState(false);
+
   useEffect(() => {
     if (id) {
       initializeWorkspace();
@@ -57,18 +71,15 @@ export default function DatasetDetailsPage() {
   const initializeWorkspace = async () => {
     try {
       setLoading(true);
-      // 1. Fetch Dataset Metadata
       const dsRes = await api.get(`/datasets/${id}`);
       const datasetData = dsRes.data;
 
-      // 2. Fetch Interactive Pipeline State
       const pipeRes = await api.get(`/pipelines/interactive/${id}`);
       setSteps(pipeRes.data.steps);
       setPreviewData(pipeRes.data.preview);
       setPreviewColumns(pipeRes.data.columns || []);
       setPipelineId(pipeRes.data.pipeline_id);
 
-      // 3. Update dataset with pipeline alerts (this has the current transformed data alerts)
       setDataset({
         ...datasetData,
         quality_alerts: pipeRes.data.quality_alerts || datasetData.quality_alerts
@@ -83,16 +94,10 @@ export default function DatasetDetailsPage() {
   };
 
   const updateState = (res: any) => {
-    console.log("UpdateState called with:", res.data);
-    console.log("Preview data sample:", res.data.preview?.slice(0, 3));
-    console.log("Steps:", res.data.steps);
-
     setSteps(res.data.steps);
-    // Create a new array reference to ensure React re-render
     setPreviewData([...(res.data.preview || [])]);
     setPreviewColumns(res.data.columns || []);
 
-    // Update quality alerts dynamically - ensure new object reference for React re-render
     if (dataset) {
       setDataset({
         ...dataset,
@@ -104,21 +109,35 @@ export default function DatasetDetailsPage() {
     }
   };
 
+  const handleSelectColumn = useCallback((col: string) => {
+    // Snapshot current data BEFORE any step is applied when user selects a column
+    setSelectedColumn(col);
+    beforeSnapshotRef.current = previewData;
+  }, [previewData]);
+
   const handleAddStep = async (operation: string, params: any) => {
     if (!id) return;
+    // Capture before snapshot for compare (keyed to currently selected column)
+    const snapshotBefore = [...previewData];
+    const colForCompare = selectedColumn;
+
     try {
       setProcessing(true);
-      console.log("Sending API request:", { operation, params });
       const res = await api.post(`/pipelines/interactive/${id}/steps`, {
         operation,
         params
       });
-      console.log("API response received:", res);
-      console.log("API response data:", res.data);
+
+      const afterRows = res.data.preview || [];
       updateState(res);
+
+      // Feature 3: Auto-open comparison if a column was selected and it was affected
+      const affectedCols: string[] = params.columns || [];
+      if (colForCompare && (affectedCols.length === 0 || affectedCols.includes(colForCompare))) {
+        setCompareData({ before: snapshotBefore, after: afterRows, column: colForCompare });
+      }
     } catch (err: any) {
       console.error("Failed to add step", err);
-      // Enhanced error handling
       const errorMsg = err.response?.data?.detail || err.message || "Operation failed";
       alert(`Error: ${errorMsg}`);
     } finally {
@@ -148,6 +167,7 @@ export default function DatasetDetailsPage() {
       setProcessing(true);
       const res = await api.post(`/pipelines/interactive/${id}/reset`);
       updateState(res);
+      setCompareData(null);
     } catch (err) {
       console.error("Failed to reset", err);
     } finally {
@@ -157,15 +177,16 @@ export default function DatasetDetailsPage() {
 
   const handleCommand = async (cmd: string) => {
     if (!id) return;
+    const snapshotBefore = [...previewData];
+    const colForCompare = selectedColumn;
     try {
       setProcessing(true);
       const res = await api.post(`/pipelines/interactive/${id}/command`, { text: cmd });
-
+      const afterRows = res.data.preview || [];
       updateState(res);
 
-      // Optionally show a toast or message about the action taken
-      if (res.data.added_step) {
-        console.log("Executed command:", res.data.added_step);
+      if (colForCompare) {
+        setCompareData({ before: snapshotBefore, after: afterRows, column: colForCompare });
       }
     } catch (err: any) {
       console.error("Command failed", err);
@@ -179,7 +200,6 @@ export default function DatasetDetailsPage() {
   const handleExport = async (format: string) => {
     if (!id) return;
     try {
-      // We can pass the current steps from state to ensure we export exactly what we see
       const pipelineSteps = steps.map(({ operation, params }) => ({ operation, params }));
       const response = await api.post(`/datasets/${id}/export`, pipelineSteps, {
         params: { export_format: format }
@@ -192,12 +212,13 @@ export default function DatasetDetailsPage() {
     }
   };
 
-  // Determine selected column type
   const selectedColumnType = useMemo(() => {
     if (!dataset || !selectedColumn) return null;
     const col = dataset.columns.find(c => c.name === selectedColumn);
     return col ? col.detected_type : null;
   }, [dataset, selectedColumn]);
+
+  const alertCount = dataset?.quality_alerts?.length ?? 0;
 
   if (loading) {
     return (
@@ -232,92 +253,156 @@ export default function DatasetDetailsPage() {
   }
 
   return (
-    <WorkspaceLayout
-      header={
-        <div className="flex w-full items-center justify-between overflow-hidden">
-          <div className="flex items-center gap-4 min-w-0 flex-1">
-            <Link to="/">
-              <Button variant="ghost" size="icon" className="h-8 w-8 text-gray-400 hover:text-white hover:bg-white/10 shrink-0">
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-            </Link>
-            <div className="min-w-0 flex-1">
-              <h1 className="text-sm font-bold text-gray-200 tracking-wide uppercase truncate">Automated Multi-Format Data Preprocessing System</h1>
-              <div className="flex items-center gap-2 text-[10px] text-gray-500 truncate">
-                <span className="truncate max-w-[200px]" title={dataset.original_filename}>FILE: {dataset.original_filename}</span>
-                <span className="shrink-0">• {dataset.row_count.toLocaleString()} ROWS</span>
-                <span className="shrink-0">• {dataset.col_count} COLS</span>
-                {dataset.quality_alerts?.length > 0 && (
-                  <span className="text-red-400 flex items-center gap-1 ml-2 font-bold shrink-0">
-                    <AlertTriangle className="h-3 w-3" /> {dataset.quality_alerts.length} ALERTS
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="flex gap-2 shrink-0 ml-4">
-            <Button variant="secondary" size="sm" onClick={() => setApplyTemplateDialogOpen(true)} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
-              <Upload className="mr-2 h-3 w-3" /> Apply Template
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => setSaveDialogOpen(true)} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
-              <Save className="mr-2 h-3 w-3" /> Save Pipeline
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => handleExport('csv')} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
-              <Download className="mr-2 h-3 w-3" /> Export CSV
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => handleExport('xlsx')} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
-              <Download className="mr-2 h-3 w-3" /> Export Excel
-            </Button>
-          </div>
-        </div>
-      }
-      sidebar={
-        <Sidebar
-          selectedColumn={selectedColumn}
+    <>
+      {/* Feature 4: Expert Inference Modal */}
+      {inferenceDialogOpen && (
+        <InferencePanel
+          datasetId={id!}
+          onClose={() => setInferenceDialogOpen(false)}
+          onApplyFix={(operation, columns) => handleAddStep(operation, { columns })}
+        />
+      )}
+      {/* Feature 3: Before/After Modal */}
+      {compareData && (
+        <BeforeAfterModal
+          column={compareData.column}
           columnType={selectedColumnType}
-          onAddStep={handleAddStep}
-          currentDatasetId={id!}
-          currentDatasetColumns={dataset.columns}
-          previewData={previewData}
+          beforeData={compareData.before}
+          afterData={compareData.after}
+          onClose={() => setCompareData(null)}
         />
-      }
-      preview={
-        <PreviewPanel
-          data={previewData}
-          columns={previewColumns.length > 0 ? previewColumns : dataset.columns.map(c => c.name)}
-          selectedColumn={selectedColumn}
-          onSelectColumn={setSelectedColumn}
-          loading={processing}
-        />
-      }
-      log={
-        <>
-          <LogPanel
-            steps={steps}
-            onRemoveStep={handleRemoveStep}
-            onReset={handleReset}
-            onCommand={handleCommand}
+      )}
+
+      <div className="flex h-screen w-full overflow-hidden">
+        {/* Feature 2: Quality panel slides in from right */}
+        {qualityPanelOpen && (
+          <div className="w-72 shrink-0 overflow-hidden z-20 shadow-xl border-l border-teal-900/40 flex flex-col" style={{ order: 2 }}>
+            <DataQualityPanel
+              alerts={dataset.quality_alerts || []}
+              onAddStep={handleAddStep}
+              onClose={() => setQualityPanelOpen(false)}
+            />
+          </div>
+        )}
+
+        <div className="flex-1 min-w-0 overflow-hidden" style={{ order: 1 }}>
+          <WorkspaceLayout
+            header={
+              <div className="flex w-full items-center justify-between overflow-hidden">
+                <div className="flex items-center gap-4 min-w-0 flex-1">
+                  <Link to="/">
+                    <Button variant="ghost" size="icon" className="h-8 w-8 text-gray-400 hover:text-white hover:bg-white/10 shrink-0">
+                      <ArrowLeft className="h-4 w-4" />
+                    </Button>
+                  </Link>
+                  <div className="min-w-0 flex-1">
+                    <h1 className="text-sm font-bold text-gray-200 tracking-wide uppercase truncate">Automated Multi-Format Data Preprocessing System</h1>
+                    <div className="flex items-center gap-2 text-[10px] text-gray-500 truncate">
+                      <span className="truncate max-w-[200px]" title={dataset.original_filename}>FILE: {dataset.original_filename}</span>
+                      <span className="shrink-0">• {dataset.row_count.toLocaleString()} ROWS</span>
+                      <span className="shrink-0">• {dataset.col_count} COLS</span>
+                      {dataset.domain && (
+                        <span className="shrink-0 text-teal-400 font-bold bg-teal-900/40 px-1.5 py-0.5 rounded border border-teal-800 ml-2">
+                          DOMAIN: {dataset.domain.toUpperCase()}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => setInferenceDialogOpen(true)}
+                        className="flex items-center gap-1 ml-1 text-teal-300 font-bold shrink-0 hover:text-white px-1.5 py-0.5 rounded hover:bg-teal-800 transition-colors bg-teal-900/60 shadow-sm border border-teal-700/50"
+                      >
+                        <span className="text-[10px]">✨</span> INFERENCE
+                      </button>
+                      {alertCount > 0 && (
+                        <button
+                          onClick={() => setQualityPanelOpen(p => !p)}
+                          className={`flex items-center gap-1 ml-2 font-bold shrink-0 px-1.5 py-0.5 rounded transition-colors ${qualityPanelOpen ? 'bg-orange-500/20 text-orange-300' : 'text-red-400 hover:text-orange-300'}`}
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          {alertCount} ALERTS
+                        </button>
+                      )}
+                      {/* Feature 3 trigger: show compare button if we have snapshot data */}
+                      {compareData && (
+                        <button
+                          onClick={() => setCompareData(compareData)}
+                          className="flex items-center gap-1 ml-1 text-teal-400 font-bold shrink-0 hover:text-teal-300 px-1.5 py-0.5 rounded hover:bg-teal-900/20 transition-colors"
+                        >
+                          <GitCompare className="h-3 w-3" />
+                          VIEW DIFF
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-2 shrink-0 ml-4">
+                  <Button variant="secondary" size="sm" onClick={() => handleExport('csv')} className="h-7 text-xs bg-teal-900/60 hover:bg-teal-800 text-teal-100 border border-teal-700 shadow-sm whitespace-nowrap font-bold">
+                    <Database className="mr-2 h-3 w-3" /> View Full Dataset
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => setApplyTemplateDialogOpen(true)} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
+                    <Upload className="mr-2 h-3 w-3" /> Apply Template
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => setSaveDialogOpen(true)} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
+                    <Save className="mr-2 h-3 w-3" /> Save Pipeline
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => handleExport('csv')} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
+                    <Download className="mr-2 h-3 w-3" /> Export CSV
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => handleExport('xlsx')} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
+                    <Download className="mr-2 h-3 w-3" /> Export Excel
+                  </Button>
+                </div>
+              </div>
+            }
+            sidebar={
+              <Sidebar
+                selectedColumn={selectedColumn}
+                columnType={selectedColumnType}
+                onAddStep={handleAddStep}
+                currentDatasetId={id!}
+                currentDatasetColumns={dataset.columns}
+                previewData={previewData}
+              />
+            }
+            preview={
+              <PreviewPanel
+                data={previewData}
+                columns={previewColumns.length > 0 ? previewColumns : dataset.columns.map(c => c.name)}
+                selectedColumn={selectedColumn}
+                onSelectColumn={handleSelectColumn}
+                loading={processing}
+              />
+            }
+            log={
+              <>
+                <LogPanel
+                  steps={steps}
+                  onRemoveStep={handleRemoveStep}
+                  onReset={handleReset}
+                  onCommand={handleCommand}
+                />
+                <SavePipelineDialog
+                  open={saveDialogOpen}
+                  onOpenChange={setSaveDialogOpen}
+                  pipelineId={pipelineId}
+                  currentName={pipelineName}
+                  onSaved={() => {
+                    alert("Pipeline saved successfully!");
+                  }}
+                />
+                <ApplyTemplateDialog
+                  open={applyTemplateDialogOpen}
+                  onOpenChange={setApplyTemplateDialogOpen}
+                  datasetId={id!}
+                  onApplied={() => {
+                    initializeWorkspace();
+                    setApplyTemplateDialogOpen(false);
+                  }}
+                />
+              </>
+            }
           />
-          <SavePipelineDialog
-            open={saveDialogOpen}
-            onOpenChange={setSaveDialogOpen}
-            pipelineId={pipelineId}
-            currentName={pipelineName}
-            onSaved={() => {
-              alert("Pipeline saved successfully!");
-            }}
-          />
-          <ApplyTemplateDialog
-            open={applyTemplateDialogOpen}
-            onOpenChange={setApplyTemplateDialogOpen}
-            datasetId={id!}
-            onApplied={() => {
-              initializeWorkspace();
-              setApplyTemplateDialogOpen(false);
-            }}
-          />
-        </>
-      }
-    />
+        </div>
+      </div>
+    </>
   );
 }

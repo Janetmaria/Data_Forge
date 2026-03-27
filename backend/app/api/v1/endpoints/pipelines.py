@@ -1,8 +1,7 @@
 import json
 import uuid
 import pandas as pd
-import numpy as np
-from typing import Any, List, Optional
+from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
@@ -12,7 +11,6 @@ from app.api.v1 import deps
 from app.services.pipeline_service import execute_pipeline
 from app.services.dataset_service import check_quality_alerts
 from app.services.nlp_service import parse_command
-from app.core.config import settings
 
 router = APIRouter()
 
@@ -284,6 +282,7 @@ def execute_pipeline_endpoint(
 @router.get("/interactive/{dataset_id}")
 def get_interactive_state(
     dataset_id: str,
+    limit: int = 100,
     db: Session = Depends(deps.get_db),
 ) -> Any:
     """
@@ -305,7 +304,7 @@ def get_interactive_state(
             steps = []
             
     # Execute pipeline to get current state
-    result = execute_preview(dataset, steps, db)
+    result = execute_preview(dataset, steps, db, limit=limit)
     
     # Calculate quality alerts on the TRANSFORMED data (always use full dataset)
     alerts = []

@@ -33,6 +33,7 @@ class DatasetBase(BaseModel):
     row_count: int
     col_count: int
     size_bytes: int
+    domain: Optional[str] = None
 
 class DatasetCreate(DatasetBase):
     stored_filename: str

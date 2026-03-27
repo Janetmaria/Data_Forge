@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 def parse_command(command: str) -> Dict[str, Any]:
     """

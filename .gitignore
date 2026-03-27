@@ -32,3 +32,8 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Test Data and Prompts
+sample_datasets/
+*.docx
+*.txt

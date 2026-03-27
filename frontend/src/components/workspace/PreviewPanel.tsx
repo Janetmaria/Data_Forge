@@ -55,7 +55,7 @@ export function PreviewPanel({ data, columns, selectedColumn, onSelectColumn, lo
               {safeColumns.map((col) => (
                 <th
                   key={col}
-                  onClick={() => onSelectColumn(col)}
+                  onClick={() => onSelectColumn(selectedColumn === col ? null : col)}
                   className={cn(
                     "p-2 font-medium border-r border-black/50 min-w-[120px] cursor-pointer hover:bg-[#333333] transition-colors select-none group text-gray-300 bg-[#252526]",
                     selectedColumn === col && "bg-[#094771] text-white"

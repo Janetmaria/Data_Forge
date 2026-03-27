@@ -1,16 +1,10 @@
-import os
-import uuid
 import json
 import re
 from dateutil import parser
 import pandas as pd
-import numpy as np
-from typing import Tuple, List, Dict, Any
-from sqlalchemy.orm import Session
+from typing import List, Dict, Any
 
-from app import models, schemas
-from app.core.config import settings
-from num2words import num2words
+from app import schemas
 from word2number import w2n
 
 def detect_encoding(file_path: str) -> str:
@@ -154,6 +148,31 @@ def infer_column_type(series: pd.Series) -> str:
                 return "Categorical"
                 
         return "Text"
+
+def classify_dataset_domain(columns: List[Any]) -> str:
+    col_names = [c.name.lower() for c in columns]
+    
+    domains = {
+        "Healthcare / Medical": ["patient", "diagnosis", "doctor", "blood", "medical", "treatment", "symptom", "hospital", "icd", "mrn", "disease", "health"],
+        "Banking / Finance": ["account", "balance", "transaction", "credit", "debit", "loan", "mortgage", "interest", "card", "iban", "swift", "finance", "currency", "investment", "fund", "equity", "bond", "stock", "deposit", "saving", "portfolio"],
+        "E-commerce / Retail": ["order", "cart", "product", "sku", "price", "checkout", "shipping", "customer", "inventory", "sales", "discount"],
+        "Human Resources": ["employee", "salary", "department", "manager", "hire", "payroll", "title", "role", "leave", "bonus", "hr"],
+        "Telecommunications": ["call", "duration", "plan", "data", "usage", "roaming", "churn", "subscriber", "telecom"],
+        "Logistics": ["shipment", "tracking", "route", "vehicle", "driver", "freight", "warehouse", "delivery", "transport"],
+        "Education": ["student", "grade", "course", "teacher", "enrollment", "gpa", "school", "university", "class"]
+    }
+    
+    scores = {d: 0 for d in domains}
+    for name in col_names:
+        for domain, keywords in domains.items():
+             if any(kw in name for kw in keywords):
+                 scores[domain] += 1
+                 
+    best_domain = max(scores.items(), key=lambda x: x[1])
+    if best_domain[1] > 0:
+        return best_domain[0]
+        
+    return "Generic / General Domain"
 
 def profile_dataset(df: pd.DataFrame) -> List[schemas.DatasetColumnCreate]:
     columns = []
@@ -341,5 +360,28 @@ def check_quality_alerts(df: pd.DataFrame) -> List[Dict[str, Any]]:
                             "missing_pct": (invalid_date / len(df)) * 100,
                             "recommended_action": "Use validate_format (date) to drop invalid rows, or convert_type (date)"
                         })
+
+    # 5. Constant Columns (Zero Variance / Only 1 value)
+    for col in df.columns:
+        if len(df) > 0 and df[col].nunique(dropna=True) == 1:
+            alerts.append({
+                "entity": col,
+                "type": "constant_column",
+                "missing_pct": 0,
+                "recommended_action": "Drop column (provides no variance/information for ML)"
+            })
+            
+    # 6. High Cardinality Categoricals (ID-like strings)
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            unique_count = df[col].nunique()
+            non_null_count = df[col].count()
+            if non_null_count > 100 and unique_count > non_null_count * 0.9:
+                alerts.append({
+                    "entity": col,
+                    "type": "high_cardinality",
+                    "missing_pct": 0,
+                    "recommended_action": "Drop column (likely an ID or primary key, not useful for ML encoding)"
+                })
 
     return alerts

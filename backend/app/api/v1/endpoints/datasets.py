@@ -6,14 +6,14 @@ import pandas as pd
 from typing import Any, List
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.api.v1 import deps
 from app.core.config import settings
-from app.services.dataset_service import parse_file, infer_column_type, profile_dataset, check_quality_alerts
+from app.services.dataset_service import parse_file, infer_column_type, check_quality_alerts, classify_dataset_domain
 from app.services.pipeline_service import execute_pipeline
 
 router = APIRouter()
@@ -138,6 +138,8 @@ def upload_dataset(
         db.add(col_obj)
         columns.append(col_obj)
     
+    # Set the dataset-level domain based on its columns
+    dataset.domain = classify_dataset_domain(columns)
     db.commit()
     
     # 6. Check Quality Alerts
@@ -190,6 +192,7 @@ def read_dataset(
         "row_count": dataset.row_count,
         "col_count": dataset.col_count,
         "size_bytes": dataset.size_bytes,
+        "domain": dataset.domain,
         "created_at": dataset.created_at,
         "columns": dataset.columns,
         "quality_alerts": alerts
