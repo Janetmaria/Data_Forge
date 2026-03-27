@@ -17,17 +17,26 @@ interface DataQualityPanelProps {
 }
 
 const ALERT_META: Record<string, { label: string; color: string; icon: string; severity: 'high' | 'medium' | 'low' }> = {
-    missing_values: { label: 'Missing Values', color: 'text-orange-400', icon: '⚠', severity: 'medium' },
-    mixed_type_numeric: { label: 'Mixed Numeric Types', color: 'text-yellow-400', icon: '⚡', severity: 'low' },
-    mixed_type_worded: { label: 'Mixed Text/Number Types', color: 'text-yellow-400', icon: '⚡', severity: 'low' },
-    invalid_numeric_format: { label: 'Invalid Numeric Format', color: 'text-red-400', icon: '✖', severity: 'high' },
-    invalid_date_format: { label: 'Invalid Date Format', color: 'text-red-400', icon: '✖', severity: 'high' },
+    missing_values:          { label: 'Missing Values',          color: 'text-orange-400', icon: '⚠',  severity: 'medium' },
+    placeholder_values:      { label: 'Placeholder / Sentinel',  color: 'text-orange-400', icon: '⚠',  severity: 'medium' },
+    mixed_type_numeric:      { label: 'Mixed Numeric Types',     color: 'text-yellow-400', icon: '⚡', severity: 'low'    },
+    mixed_type_worded:       { label: 'Mixed Text/Number Types', color: 'text-yellow-400', icon: '⚡', severity: 'low'    },
+    invalid_numeric_format:  { label: 'Invalid Numeric Format',  color: 'text-red-400',    icon: '✖',  severity: 'high'   },
+    invalid_date_format:     { label: 'Invalid Date Format',     color: 'text-red-400',    icon: '✖',  severity: 'high'   },
+    duplicate_rows:          { label: 'Duplicate Rows',          color: 'text-red-400',    icon: '✖',  severity: 'high'   },
+    outliers:                { label: 'Outliers Detected',       color: 'text-amber-400',  icon: '⚠',  severity: 'medium' },
+    class_imbalance:         { label: 'Class Imbalance',         color: 'text-purple-400', icon: '⚡', severity: 'medium' },
+    skewed_distribution:     { label: 'Skewed Distribution',     color: 'text-yellow-400', icon: '⚡', severity: 'low'    },
+    constant_column:         { label: 'Constant Column',         color: 'text-gray-400',   icon: '—',  severity: 'low'    },
+    high_cardinality:        { label: 'High Cardinality',        color: 'text-yellow-400', icon: '⚡', severity: 'low'    },
 };
 
 function getQuickFix(alert: QualityAlert): { label: string; op: string; params: any } | null {
     switch (alert.type) {
-        // missing_values intentionally has no quick-fix — the right strategy (drop, fill mean/median/mode/constant)
-        // depends heavily on the column's domain and semantics. Offering a generic fix would be misleading.
+        case 'duplicate_rows':
+            return { label: 'Drop Duplicates', op: 'drop_duplicates', params: {} };
+        case 'outliers':
+            return { label: 'Remove Outliers', op: 'remove_outliers', params: { columns: [alert.entity] } };
         case 'mixed_type_numeric':
         case 'mixed_type_worded':
             return { label: 'Convert to Numeric', op: 'convert_type', params: { columns: [alert.entity], type: 'text_to_numeric' } };
@@ -35,6 +44,8 @@ function getQuickFix(alert: QualityAlert): { label: string; op: string; params: 
             return { label: 'Convert to Numeric', op: 'convert_type', params: { columns: [alert.entity], type: 'numeric' } };
         case 'invalid_date_format':
             return { label: 'Convert to Date', op: 'convert_type', params: { columns: [alert.entity], type: 'date' } };
+        // missing_values, placeholder_values, class_imbalance, skewed_distribution, constant_column,
+        // high_cardinality — no single generic fix; user must choose the right strategy.
         default:
             return null;
     }

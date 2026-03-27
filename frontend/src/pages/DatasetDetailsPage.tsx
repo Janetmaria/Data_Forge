@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Download, AlertTriangle, Save, Upload, GitCompare, Database } from 'lucide-react';
+import { ArrowLeft, Download, AlertTriangle, Save, Upload, GitCompare } from 'lucide-react';
 import { WorkspaceLayout } from '@/layouts/WorkspaceLayout';
 import { Sidebar } from '@/components/workspace/Sidebar';
 import { PreviewPanel } from '@/components/workspace/PreviewPanel';
@@ -335,9 +335,6 @@ export default function DatasetDetailsPage() {
                   </div>
                 </div>
                 <div className="flex gap-2 shrink-0 ml-4">
-                  <Button variant="secondary" size="sm" onClick={() => handleExport('csv')} className="h-7 text-xs bg-teal-900/60 hover:bg-teal-800 text-teal-100 border border-teal-700 shadow-sm whitespace-nowrap font-bold">
-                    <Database className="mr-2 h-3 w-3" /> View Full Dataset
-                  </Button>
                   <Button variant="secondary" size="sm" onClick={() => setApplyTemplateDialogOpen(true)} className="h-7 text-xs bg-[#3e3e42] hover:bg-[#4e4e52] text-gray-200 border border-black/50 shadow-sm whitespace-nowrap">
                     <Upload className="mr-2 h-3 w-3" /> Apply Template
                   </Button>

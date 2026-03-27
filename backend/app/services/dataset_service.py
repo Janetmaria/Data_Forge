@@ -227,40 +227,64 @@ def profile_dataset(df: pd.DataFrame) -> List[schemas.DatasetColumnCreate]:
     return columns
 
 def check_quality_alerts(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    import re
+    import numpy as np
     alerts = []
-    
+    total_rows = len(df)
+    if total_rows == 0:
+        return alerts
+
     # 1. Missing Values
     for col in df.columns:
         null_count = df[col].isnull().sum()
         if null_count > 0:
-            null_pct = (null_count / len(df)) * 100
+            null_pct = (null_count / total_rows) * 100
             if null_pct >= 50:
                 alerts.append({
                     "entity": col,
                     "type": "missing_values",
                     "missing_pct": float(null_pct),
-                    "recommended_action": "Drop column or Fill with Constant"
+                    "recommended_action": "Column is mostly empty — consider dropping it or filling with a constant"
                 })
-            elif null_pct > 0:
-                 alerts.append({
+            else:
+                alerts.append({
                     "entity": col,
                     "type": "missing_values",
                     "missing_pct": float(null_pct),
-                    "recommended_action": "Fill with Mean/Median or Impute"
+                    "recommended_action": "Fill with Mean / Median (numeric) or Mode (categorical)"
                 })
 
-    # 2. Mixed Data Types (Numeric vs Worded Numbers)
+    # 2. Placeholder / Sentinel Values (e.g. -999, "N/A", "unknown")
+    text_sentinels = {"n/a", "na", "n.a.", "none", "null", "nil", "unknown",
+                      "not available", "missing", "undefined", "?", "-", "--", "tbd", "tba", "xxx"}
+    numeric_sentinels = {-999, -9999, -1, 999, 9999}
     for col in df.columns:
-        # Check if column is object type (potential mixed)
-        if df[col].dtype == 'object':
+        series = df[col].dropna()
+        if series.empty:
+            continue
+        sentinel_count = 0
+        if df[col].dtype == "object":
+            sentinel_count = int(series.apply(lambda v: str(v).strip().lower() in text_sentinels).sum())
+        elif pd.api.types.is_numeric_dtype(df[col]):
+            sentinel_count = int(series.isin(numeric_sentinels).sum())
+        if sentinel_count > 0:
+            pct = (sentinel_count / total_rows) * 100
+            alerts.append({
+                "entity": col,
+                "type": "placeholder_values",
+                "missing_pct": float(pct),
+                "recommended_action": f"{sentinel_count} placeholder values found (e.g. -999, N/A, unknown) — replace with NaN then impute"
+            })
+
+    # 3. Mixed Data Types (Numeric vs Worded Numbers)
+    from word2number import w2n
+    for col in df.columns:
+        if df[col].dtype == "object":
             numeric_count = 0
             worded_count = 0
             total_valid = 0
-            
             for val in df[col].dropna():
                 total_valid += 1
-                
-                # Check numeric
                 if isinstance(val, (int, float)):
                     numeric_count += 1
                     continue
@@ -270,45 +294,28 @@ def check_quality_alerts(df: pd.DataFrame) -> List[Dict[str, Any]]:
                     continue
                 except (ValueError, TypeError):
                     pass
-                
-                # Check worded number
                 try:
                     w2n.word_to_num(str(val))
                     worded_count += 1
                 except ValueError:
                     pass
-            
             if total_valid > 0:
-                # Case A: Mostly Numeric, some Worded
                 if numeric_count > worded_count and worded_count > 0:
-                     alerts.append({
-                        "entity": col,
-                        "type": "mixed_type_numeric",
-                        "missing_pct": 0, # Not missing, but malformed
-                        "recommended_action": "Convert entire column to Numeric (Text to Numeric)"
-                    })
-                # Case B: Mostly Worded, some Numeric
+                    alerts.append({"entity": col, "type": "mixed_type_numeric", "missing_pct": 0,
+                                   "recommended_action": "Convert entire column to Numeric (Text to Numeric)"})
                 elif worded_count > numeric_count and numeric_count > 0:
-                     alerts.append({
-                        "entity": col,
-                        "type": "mixed_type_worded",
-                        "missing_pct": 0,
-                        "recommended_action": "Convert entire column to Numeric (Text to Numeric)"
-                    })
+                    alerts.append({"entity": col, "type": "mixed_type_worded", "missing_pct": 0,
+                                   "recommended_action": "Convert entire column to Numeric (Text to Numeric)"})
 
-    # 3. Numeric Regex Validation (detect strings like "unknown" in generic numeric columns)
-    import re
+    # 4. Invalid Numeric Format
     numeric_pattern = re.compile(r"^\s*-?\d+(\.\d+)?\s*$")
-    numeric_keywords = ['age', 'price', 'amount', 'count', 'total', 'salary', 'score', 'qty', 'quantity']
-    
+    numeric_keywords = ["age", "price", "amount", "count", "total", "salary", "score", "qty", "quantity"]
     for col in df.columns:
-        if df[col].dtype == 'object':
+        if df[col].dtype == "object":
             is_numeric_name = any(kw in col.lower() for kw in numeric_keywords)
-            
             valid_numeric = 0
             invalid_numeric = 0
             total_non_null = 0
-            
             for val in df[col].dropna():
                 total_non_null += 1
                 if isinstance(val, (int, float)):
@@ -317,28 +324,26 @@ def check_quality_alerts(df: pd.DataFrame) -> List[Dict[str, Any]]:
                     valid_numeric += 1
                 else:
                     invalid_numeric += 1
-                    
             if total_non_null > 0:
                 if is_numeric_name or (valid_numeric / total_non_null) > 0.5:
                     if invalid_numeric > 0:
                         alerts.append({
                             "entity": col,
                             "type": "invalid_numeric_format",
-                            "missing_pct": (invalid_numeric / len(df)) * 100,
-                            "recommended_action": "Use validate_format (numeric) to drop invalid rows, or convert_type (numeric)"
+                            "missing_pct": (invalid_numeric / total_rows) * 100,
+                            "recommended_action": "Use Format Validation (numeric) to remove invalid entries, or Convert Type"
                         })
 
-    # 4. Date Regex Validation
-    date_pattern = re.compile(r"^\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\s*(?:T| )?(?:\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[\+-]\d{2}:\d{2})?)?\s*$")
-    date_keywords = ['date', 'time', 'dob', 'created', 'updated', 'stamp']
-    
+    # 5. Invalid Date Format
+    date_pattern = re.compile(
+        r"^\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\s*"
+        r"(?:T| )?(?:\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?\s*$"
+    )
+    date_keywords = ["date", "time", "dob", "created", "updated", "stamp"]
     for col in df.columns:
-        if df[col].dtype == 'object':
+        if df[col].dtype == "object":
             is_date_name = any(kw in col.lower() for kw in date_keywords)
-            valid_date = 0
-            invalid_date = 0
-            total_non_null = 0
-            
+            valid_date = 0; invalid_date = 0; total_non_null = 0
             for val in df[col].dropna():
                 total_non_null += 1
                 if isinstance(val, str):
@@ -346,34 +351,107 @@ def check_quality_alerts(df: pd.DataFrame) -> List[Dict[str, Any]]:
                         valid_date += 1
                     else:
                         invalid_date += 1
-                elif hasattr(val, 'year'): # datetime
+                elif hasattr(val, "year"):
                     valid_date += 1
                 else:
                     invalid_date += 1
-                    
             if total_non_null > 0:
                 if is_date_name or (valid_date / total_non_null) > 0.5:
-                    if invalid_date > 0 and invalid_date < total_non_null: # Avoid flagging 100% invalid if it's just a normal string col
+                    if invalid_date > 0 and invalid_date < total_non_null:
                         alerts.append({
                             "entity": col,
                             "type": "invalid_date_format",
-                            "missing_pct": (invalid_date / len(df)) * 100,
-                            "recommended_action": "Use validate_format (date) to drop invalid rows, or convert_type (date)"
+                            "missing_pct": (invalid_date / total_rows) * 100,
+                            "recommended_action": "Use Format Validation (date) to remove invalid entries, or Convert Type to Date"
                         })
 
-    # 5. Constant Columns (Zero Variance / Only 1 value)
+    # 6. Duplicate Rows
+    dup_count = int(df.duplicated().sum())
+    if dup_count > 0:
+        dup_pct = (dup_count / total_rows) * 100
+        alerts.append({
+            "entity": "(dataset)",
+            "type": "duplicate_rows",
+            "missing_pct": float(dup_pct),
+            "recommended_action": f"{dup_count} duplicate rows — run Drop Duplicates before train/test split to prevent data leakage"
+        })
+
+    # 7. Outliers (IQR-based)
     for col in df.columns:
-        if len(df) > 0 and df[col].nunique(dropna=True) == 1:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            series = df[col].dropna()
+            if len(series) < 10:
+                continue
+            q1, q3 = series.quantile(0.25), series.quantile(0.75)
+            iqr = q3 - q1
+            if iqr == 0:
+                continue
+            lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            outlier_count = int(((series < lower) | (series > upper)).sum())
+            if outlier_count > 0:
+                outlier_pct = (outlier_count / total_rows) * 100
+                alerts.append({
+                    "entity": col,
+                    "type": "outliers",
+                    "missing_pct": float(outlier_pct),
+                    "recommended_action": f"{outlier_count} outliers (IQR) — cap, remove with Remove Outliers, or apply log/robust scaling"
+                })
+
+    # 8. Class Imbalance
+    for col in df.columns:
+        series = df[col].dropna()
+        try:
+            unique_count = series.nunique()
+        except TypeError:
+            continue
+        if 2 <= unique_count <= 10 and len(series) >= 50:
+            value_counts = series.value_counts(normalize=True)
+            majority_pct = float(value_counts.iloc[0]) * 100
+            if majority_pct >= 80:
+                minority_label = str(value_counts.index[-1])
+                minority_pct = float(value_counts.iloc[-1]) * 100
+                alerts.append({
+                    "entity": col,
+                    "type": "class_imbalance",
+                    "missing_pct": 0,
+                    "recommended_action": (
+                        f"Majority class is {majority_pct:.0f}% of data, minority ‘{minority_label}’ is {minority_pct:.1f}% — "
+                        "apply SMOTE, undersampling, or class-weight adjustments before training"
+                    )
+                })
+
+    # 9. Skewed Distribution
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            series = df[col].dropna()
+            if len(series) < 20:
+                continue
+            try:
+                skew = float(series.skew())
+            except Exception:
+                continue
+            if abs(skew) > 2.0:
+                direction = "right (positive)" if skew > 0 else "left (negative)"
+                alerts.append({
+                    "entity": col,
+                    "type": "skewed_distribution",
+                    "missing_pct": 0,
+                    "recommended_action": f"Skewness {skew:.2f} ({direction}) — apply log transform, Box-Cox, or robust scaling"
+                })
+
+    # 10. Constant Columns (Zero Variance)
+    for col in df.columns:
+        if df[col].nunique(dropna=True) == 1:
             alerts.append({
                 "entity": col,
                 "type": "constant_column",
                 "missing_pct": 0,
-                "recommended_action": "Drop column (provides no variance/information for ML)"
+                "recommended_action": "Column has only one unique value — drop it (provides no information for ML)"
             })
-            
-    # 6. High Cardinality Categoricals (ID-like strings)
+
+    # 11. High Cardinality (ID-like string columns)
     for col in df.columns:
-        if df[col].dtype == 'object':
+        if df[col].dtype == "object":
             unique_count = df[col].nunique()
             non_null_count = df[col].count()
             if non_null_count > 100 and unique_count > non_null_count * 0.9:
@@ -381,7 +459,8 @@ def check_quality_alerts(df: pd.DataFrame) -> List[Dict[str, Any]]:
                     "entity": col,
                     "type": "high_cardinality",
                     "missing_pct": 0,
-                    "recommended_action": "Drop column (likely an ID or primary key, not useful for ML encoding)"
+                    "recommended_action": "Likely an ID or primary key — drop or use target encoding; one-hot will explode dimensionality"
                 })
 
     return alerts
+
