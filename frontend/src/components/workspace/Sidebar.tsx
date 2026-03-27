@@ -1,6 +1,5 @@
-import { useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { ChevronDown, ChevronRight, Type, Wand2, Database, GitMerge } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { ChevronDown, ChevronRight, Type, Wand2, Database, GitMerge, ChevronUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MergeDialog } from './MergeDialog';
 import { ScaleDialog } from './ScaleDialog';
@@ -24,190 +23,401 @@ interface SidebarProps {
   previewData?: any[];
 }
 
-interface OperationGroup {
-  title: string;
-  icon: any;
-  operations: Operation[];
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface SubOption {
+  label: string;
+  operation: string;
+  params?: any;
+  isCustomAction?: string; // dialog key
 }
 
-interface Operation {
+interface ControlButton {
   id: string;
   label: string;
-  description?: string;
-  validTypes?: string[]; // 'Numeric', 'String', 'Date', 'Boolean', 'All'
+  icon?: string;
+  /** If set, clicking opens a sub-menu with these choices */
+  subOptions?: SubOption[];
+  /** If set, clicking fires directly */
+  operation?: string;
+  params?: any;
+  isCustomAction?: string;
   requiresColumn?: boolean;
-  params?: any; // Default params
-  isCustomAction?: boolean; // If true, opens a dialog instead of direct action
+  validTypes?: string[];
 }
 
-export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetId, currentDatasetColumns, previewData }: SidebarProps) {
-  const [openGroups, setOpenGroups] = useState<string[]>(['data cleaning', 'feature engineering', 'advanced ml preparation', 'type conversion', 'formatting & standardization', 'data integration']);
+interface ControlGroup {
+  title: string;
+  icon: any;
+  buttons: ControlButton[];
+}
+
+// ─── Sub-menu Popover ────────────────────────────────────────────────────────
+
+function SubMenu({
+  options,
+  onSelect,
+  onClose,
+}: {
+  options: SubOption[];
+  onSelect: (o: SubOption) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute left-full top-0 ml-1 z-50 bg-[#2a2a2a] border border-gray-700 rounded-lg shadow-2xl min-w-[160px] py-1 overflow-hidden"
+    >
+      {options.map((opt, i) => (
+        <button
+          key={i}
+          className="w-full text-left px-3 py-1.5 text-[11px] text-gray-300 hover:bg-teal-600/20 hover:text-teal-300 transition-colors"
+          onClick={() => { onSelect(opt); onClose(); }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Single control button ────────────────────────────────────────────────────
+
+function CtrlButton({
+  btn,
+  isValid,
+  onDirect,
+  onSubSelect,
+}: {
+  btn: ControlButton;
+  isValid: boolean;
+  onDirect: (btn: ControlButton) => void;
+  onSubSelect: (btn: ControlButton, opt: SubOption) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const hasMenu = !!btn.subOptions?.length;
+
+  return (
+    <div className="relative">
+      <button
+        disabled={!isValid}
+        onClick={() => {
+          if (!isValid) return;
+          if (hasMenu) { setOpen(v => !v); }
+          else { onDirect(btn); }
+        }}
+        className={cn(
+          'w-full flex items-center justify-between text-left px-2 py-1 rounded text-[11px] font-medium transition-colors border',
+          isValid
+            ? 'bg-[#2d2d2d] border-black/50 text-gray-300 hover:bg-[#3a3a3a] hover:text-white'
+            : 'opacity-30 cursor-not-allowed bg-transparent border-transparent text-gray-500',
+        )}
+      >
+        <span className="flex items-center gap-1.5 truncate">
+          <span className="w-1 h-3 bg-gray-600 rounded-full opacity-40 shrink-0" />
+          {btn.label}
+        </span>
+        {hasMenu && isValid && (
+          open
+            ? <ChevronUp className="w-3 h-3 shrink-0 text-gray-400" />
+            : <ChevronDown className="w-3 h-3 shrink-0 text-gray-400" />
+        )}
+      </button>
+
+      {hasMenu && open && isValid && (
+        <SubMenu
+          options={btn.subOptions!}
+          onSelect={(opt) => onSubSelect(btn, opt)}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Main Sidebar ─────────────────────────────────────────────────────────────
+
+export function Sidebar({
+  selectedColumn,
+  columnType,
+  onAddStep,
+  currentDatasetId,
+  currentDatasetColumns,
+  previewData,
+}: SidebarProps) {
+  const [openGroups, setOpenGroups] = useState<string[]>([
+    'data cleaning', 'type conversion', 'feature engineering',
+    'advanced ml prep', 'data integration',
+  ]);
   const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
   const [scaleDialogOpen, setScaleDialogOpen] = useState(false);
   const [formatDialogOpen, setFormatDialogOpen] = useState(false);
   const [customFillDialogOpen, setCustomFillDialogOpen] = useState(false);
   const [mlEncodeDialogOpen, setMlEncodeDialogOpen] = useState(false);
 
-  const toggleGroup = (id: string) => {
-    setOpenGroups(prev =>
-      prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]
-    );
-  };
+  const toggleGroup = (id: string) =>
+    setOpenGroups(prev => prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]);
 
-  const operations: OperationGroup[] = [
+  const groups: ControlGroup[] = [
     {
       title: 'Data Cleaning',
       icon: Database,
-      operations: [
-        { id: 'drop_duplicates', label: 'Remove Duplicates', validTypes: ['All'] },
-        { id: 'drop_missing', label: 'Drop Missing Rows (Any Column)', validTypes: ['All'] },
-        { id: 'drop_missing_specific', label: 'Drop Missing Rows (This Column)', requiresColumn: true, validTypes: ['All'] },
-        { id: 'drop_columns', label: 'Drop Selected Column', requiresColumn: true, validTypes: ['All'] },
-        { id: 'fill_missing', label: 'Fill Missing (Mean)', requiresColumn: true, validTypes: ['Numeric'], params: { method: 'mean' } },
-        { id: 'fill_missing_mode', label: 'Fill Missing (Mode)', requiresColumn: true, validTypes: ['All'], params: { method: 'mode' } },
-        { id: 'fill_missing_custom', label: 'Fill Missing (Custom Value)', requiresColumn: true, validTypes: ['All'], isCustomAction: true },
-        { id: 'knn_impute', label: 'KNN Imputation', requiresColumn: true, validTypes: ['Numeric'], params: { n_neighbors: 5 } },
-        { id: 'remove_outliers_iqr', label: 'Remove Outliers (Drop via IQR)', requiresColumn: true, validTypes: ['Numeric'], params: { multiplier: 1.5 } },
-        { id: 'handle_outliers', label: 'Handle Outliers (Cap via IQR)', requiresColumn: true, validTypes: ['Numeric'], params: { method: 'iqr', fold: 1.5, strategy: 'cap' } },
-        { id: 'validate_format', label: 'Format Validation (Email, Links, IP...)', requiresColumn: true, validTypes: ['Text', 'Categorical', 'Numeric', 'Date'], isCustomAction: true },
-      ]
+      buttons: [
+        {
+          id: 'fill_missing_group',
+          label: 'Fill Missing',
+          requiresColumn: true,
+          validTypes: ['All'],
+          subOptions: [
+            { label: 'Mean',         operation: 'fill_missing', params: { method: 'mean' } },
+            { label: 'Median',       operation: 'fill_missing', params: { method: 'median' } },
+            { label: 'Mode',         operation: 'fill_missing', params: { method: 'mode' } },
+            { label: 'Custom Value', operation: 'fill_missing', isCustomAction: 'fill_custom' },
+            { label: 'KNN (k=5)',    operation: 'knn_impute',   params: { n_neighbors: 5 } },
+          ],
+        },
+        {
+          id: 'drop_rows_group',
+          label: 'Drop Rows',
+          validTypes: ['All'],
+          subOptions: [
+            { label: 'Duplicates',          operation: 'drop_duplicates', params: {} },
+            { label: 'Any Null',            operation: 'drop_missing',    params: {} },
+            { label: 'Null (This Col)',      operation: 'drop_missing',    params: { _useCol: true } },
+          ],
+        },
+        {
+          id: 'outliers_group',
+          label: 'Outliers',
+          requiresColumn: true,
+          validTypes: ['Numeric'],
+          subOptions: [
+            { label: 'Cap (IQR)',  operation: 'handle_outliers',    params: { method: 'iqr', fold: 1.5, strategy: 'cap' } },
+            { label: 'Drop (IQR)', operation: 'remove_outliers_iqr', params: { multiplier: 1.5 } },
+          ],
+        },
+        {
+          id: 'drop_columns',
+          label: 'Drop Column',
+          operation: 'drop_columns',
+          requiresColumn: true,
+          validTypes: ['All'],
+        },
+        {
+          id: 'validate_format',
+          label: 'Format Validate',
+          isCustomAction: 'format_dialog',
+          requiresColumn: true,
+          validTypes: ['Text', 'Categorical', 'Numeric', 'Date'],
+        },
+      ],
     },
     {
       title: 'Type Conversion',
       icon: Type,
-      operations: [
-        { id: 'convert_type_numeric', label: 'Convert to Numeric', requiresColumn: true, validTypes: ['All'], params: { type: 'numeric' } },
-        { id: 'convert_type_string', label: 'Convert to String', requiresColumn: true, validTypes: ['All'], params: { type: 'string' } },
-        { id: 'convert_type_text_to_numeric', label: 'Mixed → Numbers (20, thirty → 20, 30)', requiresColumn: true, validTypes: ['All'], params: { type: 'text_to_numeric' } },
-        { id: 'convert_type_numeric_to_text', label: 'Mixed → Words (20, thirty → twenty, thirty)', requiresColumn: true, validTypes: ['All'], params: { type: 'numeric_to_text' } },
-        { id: 'extract_numeric_null', label: 'Extract Numeric (Smart Parse → null invalid)', requiresColumn: true, validTypes: ['Text', 'Categorical'], params: { on_invalid: 'null' } },
-        { id: 'extract_numeric_drop', label: 'Extract Numeric (Smart Parse → drop invalid rows)', requiresColumn: true, validTypes: ['Text', 'Categorical'], params: { on_invalid: 'drop' } },
-      ]
-    },
-    {
-      title: 'Formatting & Standardization',
-      icon: Type,
-      operations: [
-        { id: 'text_case_upper', label: 'To Uppercase', requiresColumn: true, validTypes: ['String', 'Text', 'Categorical'], params: { case: 'upper' } },
-        { id: 'text_case_lower', label: 'To Lowercase', requiresColumn: true, validTypes: ['String', 'Text', 'Categorical'], params: { case: 'lower' } },
-        { id: 'text_case_title', label: 'To Title Case', requiresColumn: true, validTypes: ['String', 'Text', 'Categorical'], params: { case: 'title' } },
-      ]
+      buttons: [
+        {
+          id: 'convert_type_group',
+          label: 'Convert Type',
+          requiresColumn: true,
+          validTypes: ['All'],
+          subOptions: [
+            { label: 'To Numeric',     operation: 'convert_type', params: { type: 'numeric' } },
+            { label: 'To String',      operation: 'convert_type', params: { type: 'string' } },
+            { label: 'To Date',        operation: 'convert_type', params: { type: 'date' } },
+            { label: 'Text → Numbers', operation: 'convert_type', params: { type: 'text_to_numeric' } },
+            { label: 'Numbers → Text', operation: 'convert_type', params: { type: 'numeric_to_text' } },
+          ],
+        },
+        {
+          id: 'extract_numeric_group',
+          label: 'Extract Numeric',
+          requiresColumn: true,
+          validTypes: ['Text', 'Categorical'],
+          subOptions: [
+            { label: 'Null invalid',  operation: 'extract_numeric', params: { on_invalid: 'null' } },
+            { label: 'Drop invalid',  operation: 'extract_numeric', params: { on_invalid: 'drop' } },
+          ],
+        },
+        {
+          id: 'text_case_group',
+          label: 'Text Case',
+          requiresColumn: true,
+          validTypes: ['String', 'Text', 'Categorical'],
+          subOptions: [
+            { label: 'UPPERCASE', operation: 'text_case', params: { case: 'upper' } },
+            { label: 'lowercase', operation: 'text_case', params: { case: 'lower' } },
+            { label: 'Title Case', operation: 'text_case', params: { case: 'title' } },
+          ],
+        },
+      ],
     },
     {
       title: 'Feature Engineering',
       icon: Database,
-      operations: [
-        { id: 'extract_datetime_components', label: 'Extract Date Info (Y/M/D)', requiresColumn: true, validTypes: ['Date'], params: { components: ['year', 'month', 'day'] } },
-        { id: 'bin_column', label: 'Bin Column (Quantile)', requiresColumn: true, validTypes: ['Numeric'], params: { strategy: 'equal_frequency', n_bins: 5 } },
-        { id: 'normalize', label: 'Min-Max Scaling', requiresColumn: true, validTypes: ['Numeric'], isCustomAction: true },
-        { id: 'standard_scale', label: 'Standard Scaling (Z-Score)', requiresColumn: true, validTypes: ['Numeric'] },
-        { id: 'time_series_fill_ffill', label: 'Time-Series: Forward Fill', requiresColumn: true, validTypes: ['All'], params: { method: 'ffill' } },
-        { id: 'time_series_fill_bfill', label: 'Time-Series: Backward Fill', requiresColumn: true, validTypes: ['All'], params: { method: 'bfill' } },
-      ]
+      buttons: [
+        {
+          id: 'scale_group',
+          label: 'Scale / Normalise',
+          requiresColumn: true,
+          validTypes: ['Numeric'],
+          subOptions: [
+            { label: 'Z-Score (Standard)', operation: 'standard_scale', params: {} },
+            { label: 'Min-Max',            operation: 'normalize',       isCustomAction: 'scale_dialog' },
+          ],
+        },
+        {
+          id: 'timeseries_fill_group',
+          label: 'Time-Series Fill',
+          requiresColumn: true,
+          validTypes: ['All'],
+          subOptions: [
+            { label: 'Forward Fill',  operation: 'time_series_fill', params: { method: 'ffill' } },
+            { label: 'Backward Fill', operation: 'time_series_fill', params: { method: 'bfill' } },
+          ],
+        },
+        {
+          id: 'bin_column',
+          label: 'Bin Column',
+          operation: 'bin_column',
+          requiresColumn: true,
+          validTypes: ['Numeric'],
+          params: { strategy: 'equal_frequency', n_bins: 5 },
+        },
+        {
+          id: 'extract_datetime_components',
+          label: 'Extract Date Parts',
+          operation: 'extract_datetime_components',
+          requiresColumn: true,
+          validTypes: ['Date'],
+          params: { components: ['year', 'month', 'day'] },
+        },
+      ],
+    },
+    {
+      title: 'Advanced ML Prep',
+      icon: Wand2,
+      buttons: [
+        {
+          id: 'encode_categorical',
+          label: 'Encode Categorical',
+          isCustomAction: 'encode_dialog',
+          requiresColumn: true,
+          validTypes: ['Categorical'],
+        },
+        {
+          id: 'handle_imbalance',
+          label: 'Handle Imbalance',
+          operation: 'handle_imbalance',
+          requiresColumn: true,
+          validTypes: ['Categorical', 'Numeric'],
+          params: {
+            strategy: 'smote',
+            target_column: selectedColumn,
+            feature_columns: currentDatasetColumns
+              ?.filter(c => c.detected_type === 'Numeric')
+              .map(c => c.name) || [],
+          },
+        },
+        {
+          id: 'add_missingness_indicator',
+          label: 'Missingness Flag',
+          operation: 'add_missingness_indicator',
+          requiresColumn: true,
+          validTypes: ['All'],
+        },
+      ],
     },
     {
       title: 'Data Integration',
       icon: GitMerge,
-      operations: [
-        { id: 'merge_datasets', label: 'Merge / Join Datasets', validTypes: ['All'], isCustomAction: true },
-      ]
+      buttons: [
+        {
+          id: 'merge_datasets',
+          label: 'Merge / Join',
+          isCustomAction: 'merge_dialog',
+          validTypes: ['All'],
+        },
+      ],
     },
-    {
-      title: 'Advanced ML Preparation',
-      icon: Wand2,
-      operations: [
-        { id: 'add_missingness_indicator', label: 'Add Missingness Indicator', requiresColumn: true, validTypes: ['All'] },
-        { id: 'encode_categorical', label: 'Encode Categorical', requiresColumn: true, validTypes: ['Categorical'], isCustomAction: true },
-        { id: 'handle_imbalance', label: 'Handle Imbalance (SMOTE)', requiresColumn: true, validTypes: ['Categorical', 'Numeric'], params: { strategy: 'smote', target_column: selectedColumn, feature_columns: currentDatasetColumns?.filter(c => c.detected_type === "Numeric").map(c => c.name) || [] } },
-      ]
-    }
   ];
 
-  const handleOperationClick = (op: Operation) => {
-    if (op.isCustomAction) {
-      if (op.id === 'merge_datasets') {
-        setMergeDialogOpen(true);
-      } else if (op.id === 'normalize') {
-        if (!selectedColumn) return;
-        setScaleDialogOpen(true);
-      } else if (op.id === 'validate_format') {
-        if (!selectedColumn) return;
-        setFormatDialogOpen(true);
-      } else if (op.id === 'fill_missing_custom') {
-        if (!selectedColumn) return;
-        setCustomFillDialogOpen(true);
-      } else if (op.id === 'encode_categorical') {
-        if (!selectedColumn) return;
-        setMlEncodeDialogOpen(true);
-      }
-      return;
-    }
-
-    let params = op.params || {};
-    let opName = op.id;
-
-    // Normalize operation names mapping to backend
-    if (op.id.startsWith('text_case')) opName = 'text_case';
-    if (op.id.startsWith('convert_type')) opName = 'convert_type';
-    if (op.id.startsWith('fill_missing')) opName = 'fill_missing';
-    if (op.id === 'drop_missing_specific') opName = 'drop_missing';
-    if (op.id.startsWith('time_series_fill')) opName = 'time_series_fill';
-    if (op.id.startsWith('extract_numeric')) opName = 'extract_numeric';
-
-    if (op.requiresColumn) {
-      if (!selectedColumn) return; // Should be disabled anyway
-      if (op.id === 'encode_categorical' || op.id === 'bin_column' || op.id === 'extract_datetime_components' || op.id === 'create_lag_features' || op.id === 'create_rolling_features') {
-        params = { ...params, column: selectedColumn };
-      } else if (op.id === 'handle_imbalance') {
-        // Special case for SMOTE
-        params = { ...params, target_column: selectedColumn };
-      } else {
-        params = { ...params, columns: [selectedColumn] };
-      }
-    }
-
-    onAddStep(opName, params);
-  };
-
-  const isOperationValid = (op: Operation) => {
-    // If operation DOES NOT require a column, it is a global operation
-    if (!op.requiresColumn) {
-      // It is only valid if NO specific column is selected
-      if (selectedColumn) return false;
+  // ── Validity check ─────────────────────────────────────────────────────────
+  const isButtonValid = (btn: ControlButton): boolean => {
+    if (!btn.requiresColumn) {
+      // Global ops: valid only when no column is selected, EXCEPT merge
+      if (selectedColumn && btn.id !== 'merge_datasets') return false;
       return true;
     }
-
-    // If it requires a column, we must have one selected
     if (!selectedColumn) return false;
+    if (!btn.validTypes || btn.validTypes.includes('All')) return true;
+    if (!columnType) return false;
+    if (btn.validTypes.includes(columnType)) return true;
+    if (btn.validTypes.includes('String') && (columnType === 'Text' || columnType === 'Categorical')) return true;
+    return false;
+  };
 
-    // If types are specified, check them
-    if (op.validTypes) {
-      if (op.validTypes.includes('All')) return true;
-
-      // Strict type checking against backend types
-      if (!columnType) return false;
-
-      // Backend types: 'Numeric', 'Date', 'Boolean', 'Categorical', 'Text'
-      // Frontend map: 'String' matches 'Text' or 'Categorical'
-      if (op.validTypes.includes(columnType)) return true;
-
-      if (op.validTypes.includes('String') && (columnType === 'Text' || columnType === 'Categorical')) return true;
-
-      return false;
+  // ── Direct button click handler ────────────────────────────────────────────
+  const handleDirect = (btn: ControlButton) => {
+    if (btn.isCustomAction) {
+      if (btn.isCustomAction === 'merge_dialog')  { setMergeDialogOpen(true);  return; }
+      if (btn.isCustomAction === 'scale_dialog')  { if (selectedColumn) setScaleDialogOpen(true);  return; }
+      if (btn.isCustomAction === 'format_dialog') { if (selectedColumn) setFormatDialogOpen(true); return; }
+      if (btn.isCustomAction === 'fill_custom')   { if (selectedColumn) setCustomFillDialogOpen(true); return; }
+      if (btn.isCustomAction === 'encode_dialog') { if (selectedColumn) setMlEncodeDialogOpen(true);  return; }
+      return;
     }
+    if (!btn.operation) return;
+    let params = btn.params || {};
+    if (btn.requiresColumn && selectedColumn) {
+      const colOps = ['bin_column', 'encode_categorical', 'extract_datetime_components'];
+      if (colOps.includes(btn.id)) params = { ...params, column: selectedColumn };
+      else if (btn.id === 'handle_imbalance') params = { ...params, target_column: selectedColumn };
+      else params = { ...params, columns: [selectedColumn] };
+    }
+    onAddStep(btn.operation, params);
+  };
 
-    return true;
+  // ── Sub-option click handler ───────────────────────────────────────────────
+  const handleSubSelect = (btn: ControlButton, opt: SubOption) => {
+    if (opt.isCustomAction) {
+      if (opt.isCustomAction === 'fill_custom')  { if (selectedColumn) setCustomFillDialogOpen(true); return; }
+      if (opt.isCustomAction === 'scale_dialog') { if (selectedColumn) setScaleDialogOpen(true);      return; }
+      return;
+    }
+    let params = opt.params ? { ...opt.params } : {};
+    // _useCol flag = requires the currently selected column
+    const needsCol = params._useCol || btn.requiresColumn;
+    delete params._useCol;
+
+    if (needsCol && selectedColumn) {
+      const colOps = ['bin_column', 'encode_categorical', 'extract_datetime_components', 'knn_impute'];
+      if (colOps.includes(opt.operation)) params = { ...params, column: selectedColumn };
+      else params = { ...params, columns: [selectedColumn] };
+    }
+    onAddStep(opt.operation, params);
   };
 
   return (
-    <div className="w-64 min-w-[200px] max-w-[500px] resize-x overflow-y-auto overflow-x-hidden bg-[#1e1e1e] border-r border-black flex flex-col h-full text-xs">
-      <div className="p-3 bg-[#252526] border-b border-black">
+    <div className="w-52 min-w-[180px] max-w-[280px] resize-x overflow-y-auto overflow-x-visible bg-[#1e1e1e] border-r border-black flex flex-col h-full text-xs">
+      {/* Header */}
+      <div className="p-3 bg-[#252526] border-b border-black shrink-0">
         <h2 className="font-bold text-gray-300 uppercase tracking-wider text-[10px] mb-1">Control Panel</h2>
         <div className="text-[10px] text-gray-500 truncate">
           {selectedColumn ? (
             <span className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full bg-green-500"></div>
-              {selectedColumn} ({columnType})
+              <div className="w-2 h-2 rounded-full bg-green-500" />
+              {selectedColumn} <span className="text-gray-600">({columnType})</span>
             </span>
           ) : (
             <span className="italic">No column selected</span>
@@ -215,56 +425,43 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
         </div>
       </div>
 
-      <div className="px-2 pb-2 overflow-y-auto w-full">
-        {/* Column Statistics Panel */}
+      {/* Scrollable body */}
+      <div className="px-2 pb-4 overflow-y-auto overflow-x-visible flex-1">
         {selectedColumn && previewData && previewData.length > 0 && (
-          <ColumnStatsPanel
-            column={selectedColumn}
-            columnType={columnType}
-            data={previewData}
-          />
+          <ColumnStatsPanel column={selectedColumn} columnType={columnType} data={previewData} />
         )}
 
-        {operations.map((group, idx) => (
-          <div key={idx} className="space-y-1">
+        {groups.map((group, gi) => (
+          <div key={gi} className="mt-2">
+            {/* Group header */}
             <button
               onClick={() => toggleGroup(group.title.toLowerCase())}
-              className="flex items-center w-full px-2 py-1 text-[11px] font-bold text-gray-400 uppercase tracking-wide hover:text-white transition-colors bg-black/20 rounded-sm mb-1"
+              className="flex items-center w-full px-2 py-1 text-[10px] font-bold text-gray-500 uppercase tracking-wider hover:text-white transition-colors bg-black/20 rounded-sm mb-1"
             >
-              {openGroups.includes(group.title.toLowerCase()) ?
-                <ChevronDown className="h-3 w-3 mr-1" /> :
-                <ChevronRight className="h-3 w-3 mr-1" />
-              }
+              {openGroups.includes(group.title.toLowerCase())
+                ? <ChevronDown className="h-3 w-3 mr-1 shrink-0" />
+                : <ChevronRight className="h-3 w-3 mr-1 shrink-0" />}
               {group.title}
             </button>
 
             {openGroups.includes(group.title.toLowerCase()) && (
-              <div className="grid gap-1 pl-1">
-                {group.operations.map(op => {
-                  const isValid = isOperationValid(op);
-                  return (
-                    <Button
-                      key={op.id}
-                      variant="secondary"
-                      size="sm"
-                      className={cn(
-                        "w-full justify-start text-left h-7 text-[11px] bg-[#2d2d2d] hover:bg-[#3e3e3e] text-gray-300 border border-black/50 shadow-sm",
-                        !isValid && "opacity-40 cursor-not-allowed bg-transparent border-transparent hover:bg-transparent"
-                      )}
-                      disabled={!isValid}
-                      onClick={() => handleOperationClick(op)}
-                    >
-                      <div className="w-1 h-full bg-gray-600 mr-2 rounded-full opacity-50"></div>
-                      {op.label}
-                    </Button>
-                  );
-                })}
+              <div className="flex flex-col gap-0.5 pl-1 relative">
+                {group.buttons.map(btn => (
+                  <CtrlButton
+                    key={btn.id}
+                    btn={btn}
+                    isValid={isButtonValid(btn)}
+                    onDirect={handleDirect}
+                    onSubSelect={handleSubSelect}
+                  />
+                ))}
               </div>
             )}
           </div>
         ))}
       </div>
 
+      {/* ── Dialogs ─────────────────────────────────────────────────────────── */}
       <MergeDialog
         open={mergeDialogOpen}
         onOpenChange={setMergeDialogOpen}
@@ -279,47 +476,35 @@ export function Sidebar({ selectedColumn, columnType, onAddStep, currentDatasetI
           }
         }}
       />
-
       <ScaleDialog
         open={scaleDialogOpen}
         onOpenChange={setScaleDialogOpen}
         onApply={(params) => {
-          if (selectedColumn) {
-            onAddStep('normalize', { ...params, columns: [selectedColumn] });
-          }
+          if (selectedColumn) onAddStep('normalize', { ...params, columns: [selectedColumn] });
         }}
       />
-
       <FormatValidationDialog
         open={formatDialogOpen}
         onOpenChange={setFormatDialogOpen}
         selectedColumn={selectedColumn}
         onApply={(params) => {
-          if (selectedColumn) {
-            onAddStep('validate_format', { ...params, columns: [selectedColumn] });
-          }
+          if (selectedColumn) onAddStep('validate_format', { ...params, columns: [selectedColumn] });
         }}
       />
-
       <CustomFillDialog
         open={customFillDialogOpen}
         onOpenChange={setCustomFillDialogOpen}
         selectedColumn={selectedColumn}
         onApply={(params) => {
-          if (selectedColumn) {
-            onAddStep('fill_missing', { ...params, columns: [selectedColumn] });
-          }
+          if (selectedColumn) onAddStep('fill_missing', { ...params, columns: [selectedColumn] });
         }}
       />
-
       <MLEncodeDialog
         open={mlEncodeDialogOpen}
         onOpenChange={setMlEncodeDialogOpen}
         selectedColumn={selectedColumn}
         onApply={(params) => {
-          if (selectedColumn) {
-            onAddStep('encode_categorical', { ...params, column: selectedColumn });
-          }
+          if (selectedColumn) onAddStep('encode_categorical', { ...params, column: selectedColumn });
         }}
       />
     </div>
