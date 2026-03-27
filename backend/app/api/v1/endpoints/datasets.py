@@ -243,7 +243,7 @@ def export_dataset(
 
         # Execute Pipeline
         pipeline_steps = [step.model_dump() for step in steps]
-        df = execute_pipeline(df, pipeline_steps)
+        df, _ = execute_pipeline(df, pipeline_steps)
         
         # Save to Export Dir
         timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")

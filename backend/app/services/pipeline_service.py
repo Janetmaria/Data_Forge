@@ -37,6 +37,255 @@ class PipelineSchemaError(ValueError):
 class DeterminismMismatchError(Exception):
     pass
 
+# ─── Pre-flight Checkers ──────────────────────────────────────────────────
+# Validates preconditions against the LIVE dataframe BEFORE a step runs.
+# Raises PreFlightWarning to skip the step cleanly with a user-readable message.
+# ──────────────────────────────────────────────────────────────────────────
+
+class PreFlightWarning(Exception):
+    """Raised when a step's preconditions are not met; step is skipped safely."""
+    pass
+
+
+def pre_flight_check(df: pd.DataFrame, operation: str, params: Dict[str, Any]) -> None:
+    """
+    Validate preconditions for `operation` against the current `df`.
+    Raises PreFlightWarning with a clear message if the step would crash or
+    produce nonsense.  Does not raise for operations with no testable conditions.
+    """
+
+    def _require_cols_exist(cols):
+        missing = [c for c in (cols or []) if c not in df.columns]
+        if missing:
+            raise PreFlightWarning(
+                f"Column(s) {missing} do not exist in the current dataset. Step skipped."
+            )
+
+    def _require_numeric(cols):
+        for c in cols:
+            if c in df.columns and not pd.api.types.is_numeric_dtype(df[c]):
+                raise PreFlightWarning(
+                    f"Column '{c}' is not numeric (dtype={df[c].dtype}). "
+                    f"Convert or encode it before applying {operation}."
+                )
+
+    def _require_no_nulls(cols):
+        for c in cols:
+            if c in df.columns:
+                n = int(df[c].isnull().sum())
+                if n > 0:
+                    raise PreFlightWarning(
+                        f"Column '{c}' has {n} null value(s). "
+                        f"Impute or drop nulls before applying {operation}."
+                    )
+
+    def _require_min_rows(n, reason=''):
+        if len(df) < n:
+            raise PreFlightWarning(
+                f"Dataset has only {len(df)} row(s) but {operation} needs at least {n}. {reason}"
+            )
+
+    # ── handle_imbalance (SMOTE / undersample) ───────────────────────────
+    if operation == 'handle_imbalance':
+        target_col = params.get('target_column')
+        if not target_col:
+            raise PreFlightWarning("handle_imbalance requires a 'target_column' in params.")
+        if target_col not in df.columns:
+            raise PreFlightWarning(f"Target column '{target_col}' not found in the dataset.")
+        # Derive feature cols the same way execute_step does
+        explicit_cols = params.get('feature_columns') or []
+        exclude = {target_col} | set(params.get('exclude_columns', []))
+        if explicit_cols:
+            feature_cols = [c for c in explicit_cols
+                            if c in df.columns
+                            and pd.api.types.is_numeric_dtype(df[c])
+                            and c not in exclude]
+        else:
+            feature_cols = [c for c in df.columns
+                            if pd.api.types.is_numeric_dtype(df[c]) and c not in exclude]
+        if not feature_cols:
+            raise PreFlightWarning(
+                'No valid numeric feature columns found for handle_imbalance. '
+                'Encode categorical columns and impute missing values first.'
+            )
+        null_feature_cols = [c for c in feature_cols if df[c].isnull().any()]
+        if null_feature_cols:
+            raise PreFlightWarning(
+                f'Feature column(s) {null_feature_cols} contain null values. '
+                'SMOTE requires fully imputed numeric features. '
+                'Apply Fill Missing or Drop Missing Rows first.'
+            )
+        target_nulls = int(df[target_col].isnull().sum())
+        if target_nulls > 0:
+            raise PreFlightWarning(
+                f"Target column '{target_col}' has {target_nulls} null value(s). "
+                'Drop or fill those rows before applying handle_imbalance.'
+            )
+        if pd.api.types.is_float_dtype(df[target_col]):
+            non_null = df[target_col].dropna()
+            if len(non_null) > 0:
+                is_whole = non_null.apply(lambda x: x == int(x)).all()
+                # Continuous if values are NOT whole-numbers AND there are many distinct ones
+                # (threshold: >10% of rows are unique or >10 unique values, whichever is smaller)
+                uniqueness_ratio = non_null.nunique() / len(non_null)
+                if not is_whole and (uniqueness_ratio > 0.3 or non_null.nunique() > 10):
+                    raise PreFlightWarning(
+                        f"Target column '{target_col}' appears to be a continuous float "
+                        f"({non_null.nunique()} unique values). "
+                        'SMOTE only works for classification targets. '
+                        'Use Bin Column to discretise it first, or pick a categorical target column.'
+                    )
+        n_classes = df[target_col].dropna().nunique()
+        if n_classes < 2:
+            raise PreFlightWarning(
+                f"Target column '{target_col}' has only {n_classes} distinct class(es). "
+                'handle_imbalance requires at least 2 classes.'
+            )
+        _require_min_rows(4, 'SMOTE needs enough samples to interpolate synthetic points.')
+
+    # ── knn_impute ────────────────────────────────────────────────────────
+    elif operation == 'knn_impute':
+        cols = params.get('columns', [])
+        _require_cols_exist(cols)
+        non_num = [c for c in cols if c in df.columns
+                   and not pd.api.types.is_numeric_dtype(df[c])]
+        if non_num:
+            raise PreFlightWarning(f'KNN Imputation requires numeric columns. {non_num} are not numeric.')
+        _require_min_rows(2, 'KNN Imputation needs at least 2 rows.')
+
+    # ── outlier removal ───────────────────────────────────────────────────
+    elif operation in ('handle_outliers', 'remove_outliers_iqr'):
+        cols = params.get('columns', [])
+        _require_cols_exist(cols)
+        _require_numeric(cols)
+
+    # ── scaling ───────────────────────────────────────────────────────────
+    elif operation == 'standard_scale':
+        cols = params.get('columns', [])
+        _require_cols_exist(cols)
+        _require_numeric(cols)
+        _require_no_nulls(cols)
+
+    elif operation == 'normalize':
+        cols = params.get('columns', [])
+        _require_cols_exist(cols)
+        _require_numeric(cols)
+
+    elif operation == 'round_numeric':
+        cols = params.get('columns', [])
+        _require_cols_exist(cols)
+        _require_numeric(cols)
+
+    # ── encode_categorical ────────────────────────────────────────────────
+    elif operation == 'encode_categorical':
+        col = params.get('column')
+        if not col:
+            raise PreFlightWarning("encode_categorical requires a 'column' param.")
+        if col not in df.columns:
+            raise PreFlightWarning(f"Column '{col}' not found in the dataset.")
+        target_col = params.get('target_column')
+        if params.get('method') in ('target', 'woe') and target_col:
+            if target_col not in df.columns:
+                raise PreFlightWarning(
+                    f"Target column '{target_col}' needed for target encoding not found."
+                )
+
+    # ── bin_column ────────────────────────────────────────────────────────
+    elif operation == 'bin_column':
+        col = params.get('column')
+        if not col:
+            raise PreFlightWarning("bin_column requires a 'column' param.")
+        if col not in df.columns:
+            raise PreFlightWarning(f"Column '{col}' not found in the dataset.")
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            raise PreFlightWarning(
+                f"bin_column requires a numeric column. '{col}' has dtype={df[col].dtype}."
+            )
+
+    # ── time-series features ──────────────────────────────────────────────
+    elif operation == 'create_lag_features':
+        col = params.get('column')
+        if col and col not in df.columns:
+            raise PreFlightWarning(f"Column '{col}' not found for lag feature creation.")
+        sort_by = params.get('sort_by')
+        if sort_by and sort_by not in df.columns:
+            raise PreFlightWarning(f"sort_by column '{sort_by}' not found for lag features.")
+
+    elif operation == 'create_rolling_features':
+        col = params.get('column')
+        if col and col not in df.columns:
+            raise PreFlightWarning(f"Column '{col}' not found for rolling feature creation.")
+        if col and col in df.columns and not pd.api.types.is_numeric_dtype(df[col]):
+            raise PreFlightWarning(
+                f"Rolling features require a numeric column. '{col}' has dtype={df[col].dtype}."
+            )
+        sort_by = params.get('sort_by')
+        if sort_by and sort_by not in df.columns:
+            raise PreFlightWarning(f"sort_by column '{sort_by}' not found for rolling features.")
+
+    # ── extract_datetime_components ───────────────────────────────────────
+    elif operation == 'extract_datetime_components':
+        col = params.get('column')
+        if col and col not in df.columns:
+            raise PreFlightWarning(f"Column '{col}' not found for datetime extraction.")
+        if col and col in df.columns and not pd.api.types.is_datetime64_any_dtype(df[col]):
+            sample = df[col].dropna().head(10)
+            try:
+                pd.to_datetime(sample, errors='raise')
+            except Exception:
+                raise PreFlightWarning(
+                    f"Column '{col}' does not appear to contain datetime values. "
+                    'Use Convert Type to Date first.'
+                )
+
+    # ── merge ─────────────────────────────────────────────────────────────
+    elif operation == 'merge':
+        left_on = params.get('left_on')
+        if left_on and left_on not in df.columns:
+            raise PreFlightWarning(f"Left join key '{left_on}' not found in the primary dataset.")
+
+    # ── fill_missing ──────────────────────────────────────────────────────
+    elif operation == 'fill_missing':
+        cols = params.get('columns', [])
+        _require_cols_exist(cols)
+        method = params.get('method')
+        if method in ('mean', 'median'):
+            non_num = [c for c in cols if c in df.columns
+                       and not pd.api.types.is_numeric_dtype(df[c])]
+            if non_num:
+                raise PreFlightWarning(
+                    f"fill_missing with method='{method}' requires numeric columns. "
+                    f"Column(s) {non_num} are not numeric. Use 'mode' or 'constant' instead."
+                )
+
+    # ── drop_missing ──────────────────────────────────────────────────────
+    elif operation == 'drop_missing':
+        cols = params.get('columns', [])
+        if cols:
+            _require_cols_exist(cols)
+
+    # ── column-level ops ──────────────────────────────────────────────────
+    elif operation in ('drop_columns', 'validate_format', 'add_missingness_indicator',
+                       'text_case', 'extract_numeric', 'extract_datetime'):
+        cols = params.get('columns', [])
+        if cols:
+            _require_cols_exist(cols)
+
+    # ── filter_rows ───────────────────────────────────────────────────────
+    elif operation == 'filter_rows':
+        condition = params.get('condition', '')
+        if condition:
+            try:
+                df.query(condition)
+            except Exception as e:
+                raise PreFlightWarning(
+                    f"filter_rows condition '{condition}' is invalid: {e}. "
+                    'Step skipped to prevent unintended row loss.'
+                )
+
+    # All other operations have no testable pre-flight conditions.
+
+
 def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
     # Support both old format (direct dict) and new format (nested in step object)
     operation = step.get("operation")
@@ -604,25 +853,51 @@ def execute_step(df: pd.DataFrame, step: Dict[str, Any], context: Optional[Dict[
     
     return df
 
-def execute_pipeline(df: pd.DataFrame, steps: List[Dict[str, Any]], context: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
+def execute_pipeline(df: pd.DataFrame, steps: List[Dict[str, Any]], context: Optional[Dict[str, pd.DataFrame]] = None) -> tuple:
+    """
+    Execute a list of pipeline steps on the dataframe.
+    Returns (transformed_df, step_errors) where step_errors is a list of
+    {step_index, operation, error} dicts for any steps that failed.
+    Failed steps are SKIPPED (not halted) so all subsequent steps still run.
+    """
     # Validate Pipeline Schema
     step_ids = [s.get("step_id") for s in steps if s.get("step_id")]
     if len(step_ids) != len(set(step_ids)):
         raise DuplicateStepIDError("Pipeline contains duplicate step IDs")
 
-    for step in steps:
+    step_errors = []
+
+    for i, step in enumerate(steps):
         # Validate Required Fields
         if "operation" not in step:
             raise PipelineSchemaError("Step missing required field 'operation'")
-            
+
         try:
+            # Run pre-flight check BEFORE executing the step.
+            # If the check raises PreFlightWarning the step is skipped with a
+            # structured warning — no exception propagates to execute_step.
+            pre_flight_check(df, step.get('operation', ''), step.get('params', {}))
             df = execute_step(df, step, context)
+        except PreFlightWarning as w:
+            warn_msg = str(w)
+            print(f"[Pipeline] Step {i} ('{step.get('operation')}') SKIPPED — pre-flight: {warn_msg}")
+            step_errors.append({
+                "step_index": i,
+                "operation": step.get("operation"),
+                "error": warn_msg,
+                "skipped_by": "pre_flight_check",
+            })
+            continue
         except Exception as e:
-            # If a step fails, print the error and stop the pipeline execution,
-            # but crucially, RETURN the dataframe up to this point. 
-            # This prevents the entire workspace from bricking with a 422 if a saved
-            # step becomes invalid, allowing the user to delete the bad step in the UI.
-            print(f"Pipeline Execution Error at step '{step.get('operation')}': {e}")
-            break
-            
-    return df
+            # Step passed pre-flight but still failed at runtime — skip it.
+            error_msg = str(e)
+            print(f"[Pipeline] Step {i} ('{step.get('operation')}') failed — skipping: {error_msg}")
+            step_errors.append({
+                "step_index": i,
+                "operation": step.get("operation"),
+                "error": error_msg,
+                "skipped_by": "runtime_error",
+            })
+            continue
+
+    return df, step_errors

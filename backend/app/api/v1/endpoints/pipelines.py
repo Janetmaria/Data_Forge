@@ -54,7 +54,6 @@ def get_or_create_draft_pipeline(db: Session, dataset_id: str) -> models.Pipelin
 
 def execute_preview(dataset: models.Dataset, steps: List[dict], db: Session, limit: int = 100) -> dict:
     try:
-        # Load data
         # Load data using unified parser
         from app.services.dataset_service import parse_file
         df = parse_file(dataset.file_path, dataset.file_format)
@@ -62,12 +61,12 @@ def execute_preview(dataset: models.Dataset, steps: List[dict], db: Session, lim
         # Load secondary datasets if needed
         context = load_secondary_datasets(db, steps)
 
-        # Execute Pipeline on full dataset
-        df_transformed = execute_pipeline(df, steps, context)
-        
+        # Execute Pipeline — returns (df, step_errors); failed steps are skipped, not halted
+        df_transformed, step_errors = execute_pipeline(df, steps, context)
+
         # Determine columns
         columns = list(df_transformed.columns)
-        
+
         from app.services.dataset_service import infer_column_type
         column_schemas = [
             {"name": col, "detected_type": infer_column_type(df_transformed[col])}
@@ -76,18 +75,18 @@ def execute_preview(dataset: models.Dataset, steps: List[dict], db: Session, lim
 
         # Take preview (head)
         df_preview = df_transformed.head(limit)
-        
+
         # Convert to dict for JSON response (Handle NaNs)
-        # Using where(pd.notnull(df), None) is safer for mixed types than replace({np.nan: None})
         preview_data = df_preview.where(pd.notnull(df_preview), None).to_dict(orient="records")
 
         return {
             "preview": preview_data,
-            "preview_full_df": df_transformed, # Return full DF for quality checks
+            "preview_full_df": df_transformed,  # Return full DF for quality checks
             "row_count": len(df_transformed),
             "col_count": len(df_transformed.columns),
             "columns": columns,
-            "column_schemas": column_schemas
+            "column_schemas": column_schemas,
+            "step_errors": step_errors,  # Per-step failure details
         }
     except Exception as e:
         print(f"Pipeline Execution Error: {e}")
@@ -251,7 +250,7 @@ def execute_pipeline_endpoint(
             
         steps = json.loads(pipeline.steps)
         context = load_secondary_datasets(db, steps)
-        transformed_df = execute_pipeline(df, steps, context)
+        transformed_df, _ = execute_pipeline(df, steps, context)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Execution failed: {str(e)}")
 
